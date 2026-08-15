@@ -128,3 +128,45 @@ def test_construct_pilot6_states_bbox_path_equivalent():
         "ADD_SAME_LOCAL", "REMOVE_SAME_LOCAL", "ADD_SAME_COMPLETE",
         "REMOVE_SAME_COMPLETE", "ADD_NEW_COMPLETE", "REMOVE_NEW_COMPLETE",
     }
+
+
+def test_matched_state_six_converts_rederivation_failure_to_ineligible(monkeypatch):
+    """R4 regression: derive-goal semantic failures become counted exclusions."""
+    import sys
+    from pathlib import Path
+
+    SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+    from p2t import build_petct_matched_state_dataset as builder
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("SAME_LOCAL candidate is below minimum physical area")
+
+    def _fake_sim(residual, strategy=None, seed=None):
+        # pipeline convention: arrays are (x, y, z); coordinates are (x, y, z)
+        residual = np.asarray(residual) > 0
+        z = int(np.argmax(residual.sum(axis=(0, 1))))
+        coords = np.argwhere(residual[:, :, z] > 0)[:2]  # (x, y) pairs
+        return [[int(c[0]), int(c[1]), z] for c in coords], True, int(len(coords))
+
+    monkeypatch.setattr(builder, "derive_goal_and_authorized_target", _boom)
+    rng = np.random.default_rng(5)
+    gt = np.zeros((30, 30, 30), dtype=bool)
+    for _ in range(4):
+        center = tuple(rng.integers(5, 25, size=3))
+        zz, yy, xx = np.ogrid[:30, :30, :30]
+        gt |= ((zz - center[0]) ** 2 + (yy - center[1]) ** 2 + (xx - center[2]) ** 2) <= 9
+    result = builder.build_matched_state_six(
+        gt.astype(np.float32), np.zeros_like(gt, dtype=np.float32), gt,
+        spacing_xy=(2.734, 2.734),
+        strategy="centerline",
+        simulator=_fake_sim,
+        generation={"official_commit": "c", "seed": 42, "strategy_mode": "primary",
+                    "strategy_salt": "s", "strategy_assignment": "stable-patient-hash"},
+        local_radius_mm=15.0,
+        minimum_local_area_mm2=50.0,
+        learning_partition="train",
+    )
+    assert result["eligible"] is False
+    assert str(result["reason"]).startswith("STATE_REDERIVATION_FAILED:")
