@@ -1,0 +1,64 @@
+{
+  "prompt_version": "PETCT-CODEX-PROMPT-v2.0",
+  "intent_schema_version": "PETCT-INTENT-v2.0",
+  "status": "SIX_CLASS_BIDIRECTIONAL_DESIGN_NOT_EXECUTED",
+  "supersedes": "petct_codex_prompt_v1.json / PETCT-CODEX-PROMPT-v1.0",
+  "scope": "PSMA PET/CT, current M0, and exactly one signed scribble: positive foreground for ADD or negative background for REMOVE",
+  "system_prompt": "You are a correction-intent interpreter for a blinded PET/CT segmentation study. Infer only the state-relative six-class correction goal supported by the visible montage and scribble polarity. Do not diagnose disease, infer unseen ground truth, describe hidden target masks, or invent an illegal new-local goal. Return one bare JSON object and no markdown or surrounding prose.",
+  "task_prompt": "The montage shows five axial offsets for PET, CT, and fusion. The current M0 contour is cyan. A positive foreground scribble requests ADD; a negative background scribble requests REMOVE. Decide whether the target is SAME to the current mask or NEW, and whether the authorized correction on the prompted axial slice is LOCAL or COMPLETE. NEW is legal only with COMPLETE. If the visible evidence cannot support one legal goal, abstain. Preserve every untargeted prediction and do not make the opposite operation.",
+  "polarity_contract": {
+    "POSITIVE_FOREGROUND": {"operation": "ADD", "signed_value": 1},
+    "NEGATIVE_BACKGROUND": {"operation": "REMOVE", "signed_value": -1}
+  },
+  "goal_contract": {
+    "ADD_SAME_LOCAL": {"operation": "ADD", "target": "SAME", "scope": "LOCAL"},
+    "REMOVE_SAME_LOCAL": {"operation": "REMOVE", "target": "SAME", "scope": "LOCAL"},
+    "ADD_SAME_COMPLETE": {"operation": "ADD", "target": "SAME", "scope": "COMPLETE"},
+    "REMOVE_SAME_COMPLETE": {"operation": "REMOVE", "target": "SAME", "scope": "COMPLETE"},
+    "ADD_NEW_COMPLETE": {"operation": "ADD", "target": "NEW", "scope": "COMPLETE"},
+    "REMOVE_NEW_COMPLETE": {"operation": "REMOVE", "target": "NEW", "scope": "COMPLETE"}
+  },
+  "illegal_combinations": ["ADD_NEW_LOCAL", "REMOVE_NEW_LOCAL"],
+  "fixed_fields": {
+    "schema_version": "PETCT-INTENT-v2.0",
+    "preserve": [
+      "PRESERVE_UNAUTHORIZED_M0",
+      "DO_NOT_CHANGE_OUTSIDE_AUTHORIZED_TARGET"
+    ]
+  },
+  "decision_contract": {
+    "PREDICT": "Use exactly one of the six legal goals and its exact operation/target/scope mapping.",
+    "ABSTAIN": "Use goal=null and operation=target=scope=UNCERTAIN; alternatives may list only legal goals.",
+    "INVALID": "Never emit or repair to NEW_LOCAL; treat it as schema failure."
+  },
+  "output_fields_in_order": [
+    "schema_version",
+    "decision",
+    "goal",
+    "operation",
+    "target",
+    "scope",
+    "preserve",
+    "intent_text",
+    "alternatives",
+    "confidence"
+  ],
+  "confidence_note": "A numeric value in [0,1] is an exploratory self-report, not a calibrated class probability.",
+  "retry_policy": {
+    "max_retries": 2,
+    "same_images": true,
+    "same_scribble_polarity": true,
+    "same_semantics": true,
+    "content_repair": false,
+    "selection": "retain every attempt; never select only the best response"
+  },
+  "visible_input_forbidden": [
+    "ground-truth mask",
+    "false-negative residual mask",
+    "false-positive residual mask",
+    "gold intent",
+    "lesion component identifier",
+    "authorized target region",
+    "answer-bearing filename"
+  ]
+}

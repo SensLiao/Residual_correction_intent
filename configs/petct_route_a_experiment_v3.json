@@ -1,0 +1,147 @@
+{
+  "schema_version": "PETCT-ROUTE-A-EXPERIMENT-v3.0",
+  "status": "SCEP_REDESIGN_REGISTERED_CODE_READY_EXPERIMENTS_PENDING",
+  "canonical_decision": {
+    "authority": "SCEP-strict-redesign-2026-08-16 + Director D-2026-08-14-02/03",
+    "effective_date": "2026-08-16",
+    "supersedes": [
+      "PETCT-ROUTE-A-EXPERIMENT-v2.0 (kept frozen; v2 config/schema/code are untouched)"
+    ],
+    "legacy_policy": "v2 config and petct_intent_v2.schema.json stay byte-identical; v3 is additive"
+  },
+  "grammar": {
+    "schema_version": "PETCT-PROGRAM-GRAMMAR-v1.0",
+    "operation_authority": "signed cue hard-conditions operation; compiler never predicts operation",
+    "legal_families": {
+      "ADD": ["GROW_LOCAL", "COMPLETE_EXISTING", "CREATE_NEW"],
+      "REMOVE": ["TRIM_LOCAL", "DELETE_COMPONENT", "REPAIR_OVERSEGMENTED_COMPONENT"]
+    },
+    "include_repair": true,
+    "repair_class_retention": "conditional on construct-validity gates (expert agreement + visible identifiability + downstream response); failing gates merges REMOVE to two core families",
+    "operand_rules": {
+      "ADD_SAME": "learned component pointer over inference-visible components",
+      "ADD_NEW": "NEW_CUE sentinel; selected-component channel bitwise zero",
+      "REMOVE": "deterministic cue-hit binding (not a learned contribution)"
+    },
+    "rendering": "SAME/NEW/LOCAL/COMPLETE are deterministic projections of legal calls, never independent prediction heads"
+  },
+  "matched_state": {
+    "group_contract": "same patient/study, same PET/CT, same exact signed cue (hash), same operation; only the current mask state varies",
+    "group_loss_scope": "same-operation triplets only; ADD and REMOVE never share a group for loss purposes",
+    "sibling_priority": ["natural OOF states", "real model states", "controlled realistic perturbations", "morphological synthesis (last)"],
+    "cue_plausibility_check": "every sibling must pass a cue-plausibility gate before group admission"
+  },
+  "compiler": {
+    "architecture_id": "matched_legal_component_program_v1",
+    "input_channels": 17,
+    "family_head": "operation-conditioned; output space restricted to the legal families of the operation",
+    "pointer": "conditional on ADD existing-object families only; multi-positive targets",
+    "loss": {
+      "family_cross_entropy_weight": 1.0,
+      "matched_margin": 0.3,
+      "matched_margin_weight": 1.0,
+      "pointer_weight": 0.5
+    },
+    "arms": {
+      "J0": {"group_loss": "disabled", "group_shuffle": null, "pointer": false},
+      "J3": {"group_loss": "shuffled_placebo", "group_shuffle_seed": 20260816, "pointer": false},
+      "J4": {"group_loss": "true_matched", "group_shuffle": null, "pointer": false},
+      "J5": {"group_loss": "true_matched", "group_shuffle": null, "pointer": true},
+      "J1": {"baseline_reuse": "frozen v2 six-class joint head trained on controlled corpus (flat six-call)"},
+      "J2": {"baseline_reuse": "frozen v2 independent operation/target/scope heads (flat-slot factorization)"}
+    },
+    "training": {
+      "epochs": 100,
+      "batch_size": 16,
+      "learning_rate": 0.0003,
+      "weight_decay": 0.01,
+      "seeds": [3407, 4269, 9281],
+      "optimizer": "AdamW",
+      "checkpoint_criterion": "max val patient-balanced family macro-F1; tie-break min val_loss"
+    }
+  },
+  "editor": {
+    "schema_version": "PETCT-PROGRAM-EDITOR-v1.0",
+    "input_channels": 13,
+    "channel_12_contract": "central selected-component mask; bitwise zero for NEW_CUE; never a GT-derived map",
+    "representation_ladder": {
+      "J6": "spatial_only (12ch, NULL conditioning)",
+      "J7": "flat_action (13ch, gold family call, 10% program dropout)",
+      "J8": "continuous_surface_readout_control (capacity-matched continuous conditioning)",
+      "J9": "typed_program (13ch, legal call with family+operand, predicted or gold)"
+    },
+    "conditioning_dim": 64,
+    "program_dropout": 0.1,
+    "execution_algebra": {
+      "ADD": "delta = prediction AND NOT current (monotone union)",
+      "REMOVE": "delta = prediction AND selected component (hard complement protection)"
+    },
+    "training": {
+      "epochs": 150,
+      "batch_size": 8,
+      "learning_rate": 0.0003,
+      "weight_decay": 0.01,
+      "seeds": [3407, 4269, 9281],
+      "optimizer": "AdamW",
+      "checkpoint_criterion": "min validation authorized-target loss",
+      "loss": {
+        "bce_loss_weight": 1.0,
+        "dice_loss_weight": 1.0,
+        "spill_loss_weight": 1.0
+      }
+    }
+  },
+  "denominator_domains": {
+    "rule": "2D-plane and 3D-volume denominators are NEVER mixed; every reported metric carries an explicit denominator_domain field",
+    "domains": {
+      "2d_prompted_plane": "metrics restricted to the prompted axial slice; denominators are 2D in-plane voxels",
+      "3d_full_volume": "metrics over the full 3D volume; denominators are 3D voxels",
+      "single_slice_ceiling": "2D operable-voxel ratio (authorized_operable_voxels / authorized_full_voxels); a protocol constant, NOT an oracle Dice ceiling"
+    },
+    "official_metric": "AUC-Dice and AUC-DMM are 3D full-volume per official autoPET V evaluation",
+    "paired_reporting": "editor corrections are reported as _operable / _full / single_slice_ceiling triple, each with its own denominator"
+  },
+  "evaluation": {
+    "compiler_metrics": [
+      "patient_balanced_family_macro_f1",
+      "matched_pair_consistency",
+      "pointer_recall_at_1",
+      "pointer_mrr",
+      "legal_call_rate",
+      "per_family_confusion"
+    ],
+    "editor_metrics": [
+      "paired_delta_dice_2d",
+      "paired_delta_dice_3d",
+      "target_recovery",
+      "component_completion",
+      "nonselected_harm",
+      "selected_tp_retention",
+      "overshoot_fp_volume",
+      "predicted_gold_gap"
+    ],
+    "interventions": [
+      "correct_vs_null",
+      "scope_swap_local_complete",
+      "component_swap_ci_cj",
+      "existing_new_cue_atomic_swap",
+      "matched_sibling_legal_alternative",
+      "same_state_shuffled_stress"
+    ],
+    "statistics": {
+      "primary_unit": "patient",
+      "interval": "patient-clustered bootstrap",
+      "train_randomness": "three full-chain seeds reported separately from sampling uncertainty",
+      "multiplicity": "Holm within each frozen confirmatory family"
+    }
+  },
+  "gates": {
+    "G0": ["lineage + receipt binding", "inference-only dry-run", "legacy predicted_slots diagnostic", "291 fixed-cohort recomputation"],
+    "G1": "fixed-cohort paired 2D/3D curves; legacy gain arithmetic banned",
+    "G2": "true-group beats no-group and shuffled; natural OOF transfer holds",
+    "G3": "component census: ADD_SAME coverage >= 90-95%, ambiguity <= 20-25%",
+    "G4": "learned pointer beats nearest by >= 5pp on ambiguous subset or pointer is demoted",
+    "G5": "predicted chain beats capacity-matched flat-action/continuous controls; gold gain gap reported in absolute terms",
+    "G6": "confirmation fits complete before headline freeze"
+  }
+}

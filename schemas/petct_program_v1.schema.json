@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "petct_program_v1.schema.json",
+  "title": "PET/CT correction program response (SCEP v1)",
+  "description": "Machine contract for the state-conditioned executable correction program. Operation is supplied by the signed cue and is never predicted. SAME/NEW and LOCAL/COMPLETE appear only as deterministic renderings of legal operator calls. The frozen petct_intent_v2.schema.json remains unchanged and is the v2 response contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "decision",
+    "operation",
+    "family",
+    "operand",
+    "goal",
+    "protected_refs",
+    "confidence",
+    "typed_trace",
+    "audit"
+  ],
+  "properties": {
+    "schema_version": {"const": "PETCT-PROGRAM-v1.0"},
+    "decision": {"enum": ["PREDICT", "ABSTAIN"]},
+    "operation": {"enum": ["ADD", "REMOVE"]},
+    "family": {
+      "enum": [
+        "GROW_LOCAL",
+        "COMPLETE_EXISTING",
+        "CREATE_NEW",
+        "TRIM_LOCAL",
+        "DELETE_COMPONENT",
+        "REPAIR_OVERSEGMENTED_COMPONENT"
+      ]
+    },
+    "operand": {
+      "type": "string",
+      "description": "component key (episode_id|m_sha256_prefix|enumeration_version) or the NEW_CUE sentinel"
+    },
+    "goal": {
+      "enum": [
+        "ADD_SAME_LOCAL",
+        "ADD_SAME_COMPLETE",
+        "ADD_NEW_COMPLETE",
+        "REMOVE_SAME_LOCAL",
+        "REMOVE_SAME_COMPLETE",
+        "REMOVE_NEW_COMPLETE"
+      ],
+      "description": "deterministic rendering of the legal call, not an independent prediction"
+    },
+    "protected_refs": {
+      "type": "object",
+      "required": ["protected_complement", "monotone_update", "selected_component_scope", "new_cue_channel_all_zero"],
+      "properties": {
+        "protected_complement": {"const": true},
+        "monotone_update": {"type": "boolean"},
+        "selected_component_scope": {"type": "boolean"},
+        "new_cue_channel_all_zero": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "confidence": {
+      "anyOf": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "null"}],
+      "description": "raw posterior maximum; calibration/abstention thresholds are post-core"
+    },
+    "typed_trace": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["step"],
+        "properties": {
+          "step": {"enum": ["OBSERVE", "ENUMERATE", "SCORE", "BIND", "TYPECHECK", "PROTECT", "EXECUTE"]}
+        },
+        "additionalProperties": true
+      },
+      "description": "auditable record of the actual compilation steps; never free-text rationale"
+    },
+    "audit": {
+      "type": "object",
+      "required": ["grammar_version", "enumeration_version", "m_sha256", "manifest_sha256", "visibility_lane"],
+      "properties": {
+        "grammar_version": {"const": "PETCT-PROGRAM-GRAMMAR-v1.0"},
+        "enumeration_version": {"type": "string"},
+        "m_sha256": {"type": "string"},
+        "manifest_sha256": {"type": "string"},
+        "checkpoint_hash": {"type": ["string", "null"]},
+        "visibility_lane": {"const": "inference_visible"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"operation": {"const": "ADD"}}},
+      "then": {"properties": {"family": {"enum": ["GROW_LOCAL", "COMPLETE_EXISTING", "CREATE_NEW"]}}}
+    },
+    {
+      "if": {"properties": {"operation": {"const": "REMOVE"}}},
+      "then": {"properties": {"family": {"enum": ["TRIM_LOCAL", "DELETE_COMPONENT", "REPAIR_OVERSEGMENTED_COMPONENT"]}}}
+    },
+    {
+      "if": {"properties": {"family": {"const": "CREATE_NEW"}}},
+      "then": {
+        "properties": {
+          "operand": {"const": "NEW_CUE"},
+          "goal": {"const": "ADD_NEW_COMPLETE"}
+        },
+        "required": ["operand"]
+      }
+    },
+    {
+      "if": {"properties": {"operation": {"const": "ADD"}, "family": {"not": {"const": "CREATE_NEW"}}}},
+      "then": {"properties": {"operand": {"not": {"const": "NEW_CUE"}}}}
+    },
+    {
+      "if": {"properties": {"operation": {"const": "REMOVE"}}},
+      "then": {"properties": {"operand": {"not": {"const": "NEW_CUE"}}}}
+    }
+  ]
+}
