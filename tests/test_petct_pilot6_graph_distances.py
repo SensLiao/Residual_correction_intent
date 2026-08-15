@@ -170,3 +170,40 @@ def test_matched_state_six_converts_rederivation_failure_to_ineligible(monkeypat
     )
     assert result["eligible"] is False
     assert str(result["reason"]).startswith("STATE_REDERIVATION_FAILED:")
+
+
+def test_visible_safe_receipt_strips_forbidden_fragments():
+    """R5 regression: receipt fields like thresholds.min_component_voxels must
+    not reach the visible packet (firewall fragments: gt/gold/residual/
+    component/authorized/target/source_case/source_patient)."""
+    import sys
+    from pathlib import Path
+
+    SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+    from p2t import build_petct_matched_state_dataset as builder
+    from data.build_petct_scribble_episode import _assert_visible_safe
+
+    receipt = {
+        "schema_version": "x",
+        "status": "ELIGIBLE",
+        "thresholds": {
+            "min_component_voxels": 5,
+            "max_support_fraction": 0.8,
+        },
+        "input_content_sha256": {
+            "gt_content_sha256": "deadbeef",
+            "ct_content_sha256": "cafe",
+        },
+        "residual_sha256": "bad",
+        "stage_order": ["a", "b"],
+        "matched_goals": ["ADD_SAME_LOCAL"],
+    }
+    safe = builder._visible_safe_receipt(receipt)
+    # forbidden subtrees gone, harmless ones kept
+    assert "thresholds" not in safe or "min_component_voxels" not in safe["thresholds"]
+    assert "gt_content_sha256" not in safe.get("input_content_sha256", {})
+    assert "residual_sha256" not in safe
+    assert safe["stage_order"] == ["a", "b"]
+    _assert_visible_safe({"m0_provenance": {"materializer_receipt": safe}})

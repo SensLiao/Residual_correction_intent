@@ -105,6 +105,42 @@ def _episode_id(group_id: str, goal: str) -> str:
     return "petct-" + digest[:24]
 
 
+_VISIBLE_FORBIDDEN_FRAGMENTS = (
+    "gt",
+    "gold",
+    "residual",
+    "component",
+    "authorized",
+    "target",
+    "source_case",
+    "source_patient",
+)
+
+
+def _visible_safe_receipt(value: Any) -> Any:
+    """Recursively strip evaluation-lane field names from a receipt subtree.
+
+    Mirrors the visible-document firewall fragments so the controlled
+    materializer receipt can be bound into the visible packet without
+    leaking GT-derived field names (the full receipt stays in the
+    evaluation document).
+    """
+
+    if isinstance(value, dict):
+        output: dict[str, Any] = {}
+        for key, child in value.items():
+            if any(
+                fragment in str(key).casefold()
+                for fragment in _VISIBLE_FORBIDDEN_FRAGMENTS
+            ):
+                continue
+            output[key] = _visible_safe_receipt(child)
+        return output
+    if isinstance(value, list):
+        return [_visible_safe_receipt(child) for child in value]
+    return value
+
+
 def build_matched_state_six(
     pet: np.ndarray,
     ct: np.ndarray,
@@ -534,7 +570,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "matched_state_group_id": group_id,
                             "goal": goal,
                             "operation": operation,
-                            "materializer_receipt": pilot6["receipt"],
+                            # The full pilot6 receipt carries GT-derived field names
+                            # (gt_content_sha256, component thresholds, residual
+                            # provenance) that the visible-lane firewall forbids.
+                            # The complete receipt still reaches the evaluation
+                            # document; the visible packet keeps only the
+                            # opaque/eligible subset (2026-08-16 R5 fix).
+                            "materializer_receipt": _visible_safe_receipt(
+                                pilot6["receipt"]
+                            ),
                         }
                         visible, evaluation = build_episode_documents(
                             episode_id=episode_id,
