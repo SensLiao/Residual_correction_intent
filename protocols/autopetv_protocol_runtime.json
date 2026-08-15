@@ -1,0 +1,33 @@
+{
+  "schema_version": "PETCT-AUTOPETV-PROTOCOL-RUNTIME-v2.0",
+  "status": "FROZEN_MINIMAL_RUNTIME_SIX_CLASS_POLARITY_ADAPTER_NOT_EXECUTED",
+  "upstream_repository": "https://github.com/lab-midas/autoPETV",
+  "upstream_commit": "4a2026866bfacc812492cfc7e6a8c54ac3c4f703",
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "path": "interactive/simulate_scribbles.py",
+      "sha256": "a2124e8aa4207e53ac93259214a35b7cf74626f83ab164e519769f86557d7cd2",
+      "required_callable": "simulate_scribble_from_label"
+    },
+    {
+      "path": "metrics.py",
+      "sha256": "93e303219deb46b10fc5e5532873a42745aec1ecd6f78335f36cebba62104b83",
+      "required_callable": "MetricEvaluator"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "1eb85fc97224598dad1852b5d6483bbcf0aa8608790dcc657a5a2a761ae9c8c6"
+    }
+  ],
+  "project_adapter_contract": {
+    "ADD": "call the pinned simulator on the authorized FN mask and encode the returned curve as POSITIVE_FOREGROUND (+1)",
+    "REMOVE": "call the same pinned simulator on the authorized FP mask and encode the returned curve as NEGATIVE_BACKGROUND (-1)",
+    "strategies": ["centerline", "random", "boundary"],
+    "primary": "one curve per episode with a stable patient-hash strategy",
+    "robustness": "three matched attempts, one strategy and one curve per attempt",
+    "provenance": "record requested/effective strategy, fallback, polarity, source residual type, seed and raster hash",
+    "truth_boundary": "The upstream callable supplies geometry only. Operation and polarity are assigned by the project adapter from the frozen FN/FP source; they are never inferred from a hidden target during model execution."
+  },
+  "server_policy": "Only these three fixed files and the audited project polarity wrapper enter the server execution zone; the full repository, paper notes, official model and weights remain outside the runtime package."
+}

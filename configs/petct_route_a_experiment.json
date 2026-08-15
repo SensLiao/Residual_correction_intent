@@ -1,0 +1,313 @@
+{
+  "schema_version": "PETCT-ROUTE-A-EXPERIMENT-v2.0",
+  "status": "SIX_CLASS_CANONICAL_FROZEN_LOCAL_IMPLEMENTATION_PRESENT_CONFIRMATORY_BLOCKED_NOT_EXECUTED",
+  "canonical_decision": {
+    "authority": "professor-directed",
+    "effective_date": "2026-07-31",
+    "supersedes": [
+      "PETCT-ROUTE-A-EXPERIMENT-v1.0",
+      "PETCT-INTENT-v1.0",
+      "three-class ADD-only experimental plan"
+    ],
+    "legacy_policy": "v1 artifacts are provenance only and cannot satisfy a v2 gate",
+    "feasibility_amendment_policy": "The six-class default may be changed only before locked testing and only after the patient-excluded OOF error atlas supplies documented class-infeasibility evidence."
+  },
+  "dataset": {
+    "name": "PSMA-PET-CT-Lesions-v3",
+    "cases": 597,
+    "patients": 378,
+    "split_unit": "patient",
+    "folds": 5,
+    "split_seed": 42,
+    "learning_split": {
+      "schema_version": "PETCT-LEARNING-SPLIT-v1.0",
+      "algorithm": "stable-patient-hash-v1",
+      "seed": 20260717,
+      "target_patient_counts": {"train": 264, "val": 57, "test": 57},
+      "case_counts": "FROZEN_IN_GENERATED_SPLIT_RECEIPT",
+      "test_access": "exactly-once-after-all-v2-development-freezes"
+    }
+  },
+  "m0": {
+    "framework": "nnUNet-v2.8.1",
+    "dataset_id": 901,
+    "configuration": "3d_fullres",
+    "trainer": "nnUNetTrainer",
+    "epochs": 1000,
+    "channels": ["CT", "PET"],
+    "save_foreground_probability": true,
+    "gpu_queues": {"0": [0, 2, 4], "1": [1, 3]},
+    "role": "one OOF family: every case receives exactly one held-out-fold prediction"
+  },
+  "error_atlas": {
+    "schema_version": "PETCT-ERROR-ATLAS-v2.0",
+    "required_sources": ["patient-excluded OOF M0", "binary GT"],
+    "residuals": {
+      "ADD": "FN = GT AND NOT M0",
+      "REMOVE": "FP = M0 AND NOT GT"
+    },
+    "required_accounting": [
+      "raw case and patient denominator",
+      "FN and FP component counts",
+      "zero-FN and zero-FP cases",
+      "exclusion reason",
+      "six-class candidate and survivor coverage"
+    ],
+    "class_feasibility_gate": "must freeze before P2T/editor training or any locked test"
+  },
+  "scribble": {
+    "source": "lab-midas/autoPETV",
+    "commit": "4a2026866bfacc812492cfc7e6a8c54ac3c4f703",
+    "simulator_file_sha256": "a2124e8aa4207e53ac93259214a35b7cf74626f83ab164e519769f86557d7cd2",
+    "polarity_contract": {
+      "ADD": {"name": "POSITIVE_FOREGROUND", "source_residual": "FN", "signed_value": 1},
+      "REMOVE": {"name": "NEGATIVE_BACKGROUND", "source_residual": "FP", "signed_value": -1}
+    },
+    "model_encoding": {
+      "p2t": "two disjoint binary channels: cue_fg and cue_bg",
+      "editor_projection": "one signed channel cue_fg-cue_bg: +1 ADD, -1 REMOVE, 0 elsewhere"
+    },
+    "strategies": ["centerline", "random", "boundary"],
+    "cue_eligibility_rule": "largest-axial-slice-pixels-per-residual-component",
+    "minimum_best_slice_pixels": 5,
+    "cue_eligibility_decision": "D-2026-08-02-01: a residual connected component may carry a cue only when its largest axial slice holds at least minimum_best_slice_pixels pixels; the unit is pixels and not mm^2 because in-plane spacing varies per case (one pixel spans 7.48-16.59 mm^2 across the cohort), so no physical-area threshold can guarantee a drawable centerline or boundary curve",
+    "primary_assignment": "stable-patient-hash",
+    "primary_strategy_mode": "primary",
+    "primary_strategy_salt": "PETCT-PRIMARY-v2",
+    "robustness_strategy_mode": "all-as-three-matched-attempts-not-three-strokes-in-one-episode",
+    "seed": 42
+  },
+  "intent_ontology": {
+    "schema_version": "PETCT-INTENT-TAXONOMY-v2.0",
+    "operations": ["ADD", "REMOVE"],
+    "targets": ["SAME", "NEW"],
+    "scopes": ["LOCAL", "COMPLETE"],
+    "legal_joint_goals": [
+      "ADD_SAME_LOCAL",
+      "REMOVE_SAME_LOCAL",
+      "ADD_SAME_COMPLETE",
+      "REMOVE_SAME_COMPLETE",
+      "ADD_NEW_COMPLETE",
+      "REMOVE_NEW_COMPLETE"
+    ],
+    "forbidden_joint_goals": ["ADD_NEW_LOCAL", "REMOVE_NEW_LOCAL"],
+    "cue_channels": ["FG_POSITIVE", "BG_NEGATIVE"],
+    "illegal_policy": "hard-fail; never silently coerce, train, score or use as an intervention target",
+    "scope_observation_plane": "prompted axial slice"
+  },
+  "p2t": {
+    "input_channels": [
+      "PET_z-2", "PET_z-1", "PET_z", "PET_z+1", "PET_z+2",
+      "CT_z-2", "CT_z-1", "CT_z", "CT_z+1", "CT_z+2",
+      "M0_z-2", "M0_z-1", "M0_z", "M0_z+1", "M0_z+2",
+      "FG_POSITIVE_scribble_prompted_axial_slice",
+      "BG_NEGATIVE_scribble_prompted_axial_slice"
+    ],
+    "input_channel_count": 17,
+    "primary_architecture_id": "simple_signed_scribble_state_pool_v2",
+    "primary_architecture": "simple-first shared state encoder plus explicit FG/BG cue-support pooling and relative-geometry MLP",
+    "architecture_priority": "close a transparent six-class baseline before cross-attention or other complex fusion",
+    "deferred_architecture_ablations": [
+      "scribble-query cross-attention",
+      "MPSL-inspired global pooling variant",
+      "PET-CT modality cross-attention"
+    ],
+    "heads": {
+      "joint": [
+        "ADD_SAME_LOCAL",
+        "REMOVE_SAME_LOCAL",
+        "ADD_SAME_COMPLETE",
+        "REMOVE_SAME_COMPLETE",
+        "ADD_NEW_COMPLETE",
+        "REMOVE_NEW_COMPLETE"
+      ],
+      "operation": ["ADD", "REMOVE"],
+      "target": ["SAME", "NEW"],
+      "scope": ["LOCAL", "COMPLETE"]
+    },
+    "decoder_policy": "joint argmax must decode to internally consistent operation/target/scope slots; illegal combinations are impossible",
+    "primary_metric": "six_class_patient_balanced_joint_macro_f1",
+    "primary_end_to_end_arm": "full",
+    "simple_first_input_arms": ["full", "no_M0", "polarity_blind", "geometry_only"],
+    "deferred_input_ablations": ["no_PET", "no_CT", "no_relpos"],
+    "input_arms": {
+      "full": "PET5+CT5+M0_5+cue_fg+cue_bg+relative_geometry",
+      "no_M0": "PET5+CT5+zero_M0_5+cue_fg+cue_bg+relative_geometry",
+      "polarity_blind": "PET5+CT5+M0_5+union_cue_support duplicated without FG/BG identity+relative_geometry",
+      "geometry_only": "zero_PET5+zero_CT5+M0_5+cue_fg+cue_bg+relative_geometry"
+    },
+    "training": {
+      "epochs": 100,
+      "batch_size": 16,
+      "learning_rate": 0.0003,
+      "weight_decay": 0.01,
+      "seeds": [3407, 4269, 9281],
+      "optimizer": "AdamW",
+      "checkpoint_criterion": "max val_patient_balanced_six_class_joint_macro_f1; tie-break min val_loss",
+      "loss": {
+        "joint_cross_entropy_weight": 1.0,
+        "operation_cross_entropy_weight": 0.25,
+        "target_cross_entropy_weight": 0.25,
+        "scope_cross_entropy_weight": 0.25,
+        "legality": "joint-defined slot targets only"
+      }
+    },
+    "evaluation": {
+      "bootstrap_seed": 20260717,
+      "bootstrap_samples": 10000,
+      "alpha": 0.05,
+      "required_diagnostics": [
+        "six_class_joint_confusion_matrix",
+        "operation_macro_f1",
+        "joint_decoded_target_macro_f1",
+        "joint_decoded_scope_macro_f1",
+        "invalid_combination_rate",
+        "per_polarity",
+        "per_strategy",
+        "per_goal",
+        "patient_balanced_metrics"
+      ]
+    },
+    "candidate_confirmatory_contrast": {
+      "treatment": "full",
+      "comparator": "no_M0",
+      "metric": "six_class_patient_balanced_joint_macro_f1",
+      "alternative": "greater",
+      "minimum_absolute_effect": "PENDING_PRETEST_FEASIBILITY_AND_POWER_JUSTIFICATION",
+      "decision_rule": "freeze effect threshold before locked test; then require p-value and point-estimate criteria"
+    },
+    "confirmatory_execution_gate": "BLOCKED_UNTIL_ERROR_ATLAS_FEASIBILITY_AND_EFFECT_FREEZE"
+  },
+  "editor": {
+    "schema_version": "PETCT-BIDIRECTIONAL-EDITOR-v2.0",
+    "input_channels": [
+      "PET_z-2", "PET_z-1", "PET_z", "PET_z+1", "PET_z+2",
+      "CT_z-2", "CT_z-1", "CT_z", "CT_z+1", "CT_z+2",
+      "M0_z", "SIGNED_scribble_prompted_axial_slice"
+    ],
+    "input_channel_count": 12,
+    "primary_architecture_id": "simple_operation_conditioned_residual_unet_v2",
+    "primary_architecture": "simple-first 2.5D residual U-Net with structured operation/target/scope embedding and one nonnegative delta logit",
+    "output": "operation-conditioned Delta",
+    "update": {
+      "ADD": "M1 = M0 union Delta",
+      "REMOVE": "M1 = M0 minus Delta"
+    },
+    "safety_contract": {
+      "algebraically_enforced": {
+        "ADD": "union update cannot delete M0",
+        "REMOVE": "subtraction update cannot add foreground"
+      },
+      "learned_and_evaluated_not_oracle_enforced_at_inference": "avoid delta outside the authorized FN/FP through the unauthorized-delta training penalty and report unauthorized change plus true_positive_preservation_rate on evaluation truth",
+      "invalid_or_irrelevant_prompt": "upstream P2T/protocol must abstain or select no-op; editor application accepts only a legal ADD/REMOVE operation and has no access to GT-derived authorization at deployment"
+    },
+    "local_radius_mm": 15.0,
+    "minimum_local_area_mm2": 50.0,
+    "inference_threshold": 0.5,
+    "conditions": [
+      "visual_state_only",
+      "spatial_only",
+      "intent_only",
+      "scribble_plus_intent",
+      "scribble_plus_operation",
+      "same_weight_NULL",
+      "same_weight_wrong_scope",
+      "same_weight_shuffled",
+      "oracle_slots",
+      "predicted_slots",
+      "wrong_operation_OOD"
+    ],
+    "training_conditions": [
+      "visual_state_only",
+      "spatial_only",
+      "intent_only",
+      "scribble_plus_intent"
+    ],
+    "condition_policy": {
+      "scribble_plus_operation": "replaces legacy scribble_plus_ADD",
+      "wrong_scope": "SAME-only descriptive diagnostic: flip LOCAL and COMPLETE without changing target; NEW episodes are explicitly INELIGIBLE and the condition is excluded from confirmatory analysis",
+      "wrong_operation_OOD": "same rich checkpoint; flip only the conditioning operation token while retaining the gold physical set-algebra operation; safety stress only and excluded from confirmatory utility",
+      "shuffle": "non-identity derangement within the six legal joint goals",
+      "oracle_predicted": "oracle_slots and predicted_slots both reuse the scribble_plus_intent checkpoint; only the actual conditioning slots change"
+    },
+    "intent_interventions": {
+      "operation_only_semantics": "preserve-gold-operation-and-neutralize-target-scope",
+      "null_semantics": "zero-condition-vector-and-explicit-conditioner-bypass",
+      "wrong_scope_semantics": "flip LOCAL and COMPLETE only when target=SAME; retain target; mark all NEW episodes INELIGIBLE",
+      "shuffle_algorithm": "six-legal-joint-label-preserving-non-identity-derangement-v2",
+      "shuffle_seed": 20260717,
+      "wrong_operation_semantics": "flip only the ADD/REMOVE conditioning token; retain the gold execution operation for physical set algebra and scoring; never construct a gold target or confirmatory utility row"
+    },
+    "fusion_plan": {
+      "primary": "simple structured conditioning",
+      "deferred_ablations": ["FiLM", "concat", "gated", "intent-image cross_attention"],
+      "rule": "do not start deferred fusion until six-class simple-first closure"
+    },
+    "primary_metric": "target_residual_recall",
+    "training": {
+      "epochs": 150,
+      "batch_size": 8,
+      "learning_rate": 0.0003,
+      "weight_decay": 0.01,
+      "seeds": [3407, 4269, 9281],
+      "optimizer": "AdamW",
+      "checkpoint_criterion": "min validation operation-aware authorized-target loss",
+      "loss": {
+        "bce_loss_weight": 1.0,
+        "dice_loss_weight": 1.0,
+        "unauthorized_delta_loss_weight": 1.0,
+        "formula": "BCEWithLogits(delta_logits,target_delta) + softDice(delta_logits,target_delta) + mean(sigmoid(delta_logits)*(1-authorized_delta))",
+        "operation_semantics": "the same unauthorized-delta formula penalizes ADD outside authorized FN and REMOVE outside authorized FP"
+      }
+    }
+  },
+  "learning_tensor_normalization": {
+    "crop_field_mm": 192.0,
+    "output_size_px": 256,
+    "output_spacing_mm": 0.75,
+    "ct": "clip[-1000,1000]/1000",
+    "pet": "log1p(max(SUV,0)) then per-volume robust z-score over positive voxels",
+    "robust_scale": "IQR with epsilon=1e-6",
+    "mask_channels": "M0 binary 0/1; P2T cue_fg/cue_bg binary disjoint; editor derives signed cue as cue_fg-cue_bg",
+    "note": "Shared by all v2 P2T/editor conditions; input-only statistics never use GT."
+  },
+  "statistics": {
+    "status": "DESIGN_REQUIRES_V2_FEASIBILITY_AND_EFFECT_FREEZE_BEFORE_LOCKED_TEST",
+    "primary_unit": "patient",
+    "episode_rows": "repeated-measures",
+    "interval": "patient-cluster-bootstrap",
+    "multiplicity": "Holm within each frozen confirmatory family",
+    "alpha": 0.05,
+    "bootstrap_samples": 10000,
+    "permutation_samples": 10000,
+    "bootstrap_seed": 20260717,
+    "permutation_seed": 20261717,
+    "required_strata": ["operation", "target", "scope", "joint_goal", "scribble_strategy"],
+    "candidate_confirmatory_families": {
+      "p2t_state_dependence": ["full", "no_M0"],
+      "editor_intent_utility": ["scribble_plus_intent", "scribble_plus_operation", "same_weight_NULL", "same_weight_shuffled"],
+      "slot_retention": ["oracle_slots", "predicted_slots"],
+      "safety": [
+        "unauthorized_addition_physical_measure",
+        "unauthorized_removal_physical_measure",
+        "true_positive_preservation_rate",
+        "operation_algebra_safety_pass",
+        "target_operation_safety_pass"
+      ]
+    },
+    "confirmatory_execution_gate": "BLOCKED_UNTIL_ERROR_ATLAS_FEASIBILITY_AND_EFFECT_FREEZE",
+    "required_frozen_contrast_fields": [
+      "family",
+      "treatment",
+      "comparator",
+      "metric",
+      "threshold_ref",
+      "null_margin",
+      "alternative"
+    ],
+    "pre_freeze_validation_policy": "validation may emit descriptive/feasibility summaries only; confirmatory aggregation and locked-test access must fail closed",
+    "excluded_from_confirmatory": ["wrong_operation_OOD", "same_weight_wrong_scope (SAME-only descriptive diagnostic)", "deferred architecture/fusion ablations"],
+    "effect_thresholds": "FREEZE_AFTER_ERROR_ATLAS_AND_BEFORE_LOCKED_TEST; legacy v1 thresholds do not transfer automatically",
+    "test_access": "exactly-once-after-v2-freeze"
+  }
+}
