@@ -153,15 +153,30 @@ def build_matched_state_six(
         operation = expected_goal.split("_", 1)[0]
         scribble = scribbles[operation]
         state = constructed["states"][expected_goal]
-        actual_goal, authorized, target_stats = derive_goal_and_authorized_target(
-            gt=gt,
-            m0=state["m0"],
-            operation=operation,
-            coordinates_xyz=scribble["coordinates_xyz"],
-            spacing_xy=spacing_xy,
-            local_radius_mm=local_radius_mm,
-            minimum_local_area_mm2=minimum_local_area_mm2,
-        )
+        # The constructed six states are proposals; the official re-derivation
+        # (Euclidean 15 mm radius + 50 mm^2 minimum area) is the binding check.
+        # A semantic re-derivation failure is a counted exclusion, not a
+        # system fault: the run must not fail closed on a boundary case whose
+        # construction/derivation radii disagree (2026-08-16 R4 fix).
+        try:
+            actual_goal, authorized, target_stats = derive_goal_and_authorized_target(
+                gt=gt,
+                m0=state["m0"],
+                operation=operation,
+                coordinates_xyz=scribble["coordinates_xyz"],
+                spacing_xy=spacing_xy,
+                local_radius_mm=local_radius_mm,
+                minimum_local_area_mm2=minimum_local_area_mm2,
+            )
+        except RuntimeError as exc:
+            return {
+                "eligible": False,
+                "reason": (
+                    f"STATE_REDERIVATION_FAILED:{expected_goal}:{exc}"
+                ),
+                "receipt": constructed["receipt"],
+                "scribbles": scribbles,
+            }
         if actual_goal != expected_goal:
             return {
                 "eligible": False,
