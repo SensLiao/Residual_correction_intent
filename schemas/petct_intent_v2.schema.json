@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "petct_intent_v2.schema.json",
+  "title": "PET/CT six-class bidirectional correction-intent response",
+  "description": "Machine contract for the structured P2T response. Scribble polarity is an episode/input field and is deliberately not duplicated in this response object.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "decision",
+    "goal",
+    "operation",
+    "target",
+    "scope",
+    "preserve",
+    "intent_text",
+    "alternatives",
+    "confidence"
+  ],
+  "properties": {
+    "schema_version": {"const": "PETCT-INTENT-v2.0"},
+    "decision": {"enum": ["PREDICT", "ABSTAIN"]},
+    "goal": {
+      "type": ["string", "null"],
+      "enum": [
+        "ADD_SAME_LOCAL",
+        "REMOVE_SAME_LOCAL",
+        "ADD_SAME_COMPLETE",
+        "REMOVE_SAME_COMPLETE",
+        "ADD_NEW_COMPLETE",
+        "REMOVE_NEW_COMPLETE",
+        null
+      ]
+    },
+    "operation": {"enum": ["ADD", "REMOVE", "UNCERTAIN"]},
+    "target": {"enum": ["SAME", "NEW", "UNCERTAIN"]},
+    "scope": {"enum": ["LOCAL", "COMPLETE", "UNCERTAIN"]},
+    "preserve": {
+      "const": [
+        "PRESERVE_UNAUTHORIZED_M0",
+        "DO_NOT_CHANGE_OUTSIDE_AUTHORIZED_TARGET"
+      ]
+    },
+    "intent_text": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "alternatives": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "ADD_SAME_LOCAL",
+          "REMOVE_SAME_LOCAL",
+          "ADD_SAME_COMPLETE",
+          "REMOVE_SAME_COMPLETE",
+          "ADD_NEW_COMPLETE",
+          "REMOVE_NEW_COMPLETE"
+        ]
+      }
+    },
+    "confidence": {
+      "anyOf": [
+        {"type": "number", "minimum": 0, "maximum": 1},
+        {"type": "null"}
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "decision": {"const": "PREDICT"},
+        "goal": {"const": "ADD_SAME_LOCAL"},
+        "operation": {"const": "ADD"},
+        "target": {"const": "SAME"},
+        "scope": {"const": "LOCAL"},
+        "alternatives": {"not": {"contains": {"const": "ADD_SAME_LOCAL"}}}
+      }
+    },
+    {
+      "properties": {
+        "decision": {"const": "PREDICT"},
+        "goal": {"const": "REMOVE_SAME_LOCAL"},
+        "operation": {"const": "REMOVE"},
+        "target": {"const": "SAME"},
+        "scope": {"const": "LOCAL"},
+        "alternatives": {"not": {"contains": {"const": "REMOVE_SAME_LOCAL"}}}
+      }
+    },
+    {
+      "properties": {
+        "decision": {"const": "PREDICT"},
+        "goal": {"const": "ADD_SAME_COMPLETE"},
+        "operation": {"const": "ADD"},
+        "target": {"const": "SAME"},
+        "scope": {"const": "COMPLETE"},
+        "alternatives": {"not": {"contains": {"const": "ADD_SAME_COMPLETE"}}}
+      }
+    },
+    {
+      "properties": {
+        "decision": {"const": "PREDICT"},
+        "goal": {"const": "REMOVE_SAME_COMPLETE"},
+        "operation": {"const": "REMOVE"},
+        "target": {"const": "SAME"},
+        "scope": {"const": "COMPLETE"},
+        "alternatives": {"not": {"contains": {"const": "REMOVE_SAME_COMPLETE"}}}
+      }
+    },
+    {
+      "properties": {
+        "decision": {"const": "PREDICT"},
+        "goal": {"const": "ADD_NEW_COMPLETE"},
+        "operation": {"const": "ADD"},
+        "target": {"const": "NEW"},
+        "scope": {"const": "COMPLETE"},
+        "alternatives": {"not": {"contains": {"const": "ADD_NEW_COMPLETE"}}}
+      }
+    },
+    {
+      "properties": {
+        "decision": {"const": "PREDICT"},
+        "goal": {"const": "REMOVE_NEW_COMPLETE"},
+        "operation": {"const": "REMOVE"},
+        "target": {"const": "NEW"},
+        "scope": {"const": "COMPLETE"},
+        "alternatives": {"not": {"contains": {"const": "REMOVE_NEW_COMPLETE"}}}
+      }
+    },
+    {
+      "properties": {
+        "decision": {"const": "ABSTAIN"},
+        "goal": {"const": null},
+        "operation": {"const": "UNCERTAIN"},
+        "target": {"const": "UNCERTAIN"},
+        "scope": {"const": "UNCERTAIN"}
+      }
+    }
+  ]
+}

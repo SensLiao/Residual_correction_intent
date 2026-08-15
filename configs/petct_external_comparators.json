@@ -1,0 +1,790 @@
+{
+  "schema_version": "PETCT-EXTERNAL-COMPARATOR-CONTRACT-v2.0",
+  "status": "SIX_CLASS_PROMPT_CONTRACT_LOCAL_IMPLEMENTATION_PRESENT_NOT_EXECUTED",
+  "scientific_scope": {
+    "dataset": "PSMA-PET-CT-Lesions-v3",
+    "evaluation_unit": "patient",
+    "current_state": "patient-excluded OOF M0",
+    "primary_prompt": "one signed scribble: positive foreground/FN for ADD or negative background/FP for REMOVE, using pinned autoPET V geometry",
+    "poc_update": "single-step correction",
+    "bidirectional_prompt_policy": "Each method must declare ADD and REMOVE support separately. Unsupported polarity is reported as unsupported; it is never synthesized, dropped from the denominator, or imputed from a full-mask/add-only output.",
+    "warning": "External methods are separate spatial comparators. They are not same-weight six-class intent causal arms and must not replace the internal spatial/intent/safety matrix. Any union_with_m0 output is POSITIVE_ONLY_DIAGNOSTIC, never a current primary or bidirectional baseline; legacy positive-only rows are provenance only."
+  },
+  "method_selection_review": {
+    "status": "LANDSCAPE_EVIDENCE_CLOSED_NO_EXACT_PAIR_FOUND_IN_AUDITED_SET_AS_OF_2026_07_18_NOT_EXECUTED",
+    "document": "docs/09-PAPER-CODE-REVIEW-AND-METHOD-SELECTION.md",
+    "audit_closure": {
+      "overall": "EVIDENCE_CLOSED_NO_EXACT_EXTERNAL_PAIR_FOUND_IN_AUDITED_SET_AS_OF_2026_07_18",
+      "autopetv_scribble_protocol": "CLOSED",
+      "scribble_interactive_segmentation": "CLOSED_FOR_AUDITED_INTERFACES_AND_SW_EXACT_PAPER_CODE_CONTRACT_WITH_METHOD_SPECIFIC_EXECUTION_GATES",
+      "external_prompt_to_text": "CLOSED_NO_EXACT_PAIR_FOUND_IN_AUDITED_SET_AS_OF_2026_07_18_MPSL_CLOSEST_PRIOR_ONLY",
+      "petct_text_conditioned_residual_fusion": "CORE_EVIDENCE_CLOSED_PRIMARY_EARLY_CONCAT_PLUS_PREREGISTERED_PET_CT_AND_INTENT_CONDITIONING_ADAPT_SETS_NO_EXACT_RESIDUAL_PAIR_AATSN_ABSTRACT_ONLY_LEGAL_FULLTEXT_PENDING"
+    },
+    "adapt_protocol_only": ["autopetv_scribble_simulator"],
+    "adapt_clean_room_inspired_only": ["mpsl_inspired_p2t"],
+    "descriptive_secondary_not_admitted": ["autopetv_official_4ch_nnunet"],
+    "run_candidates_not_admitted": ["scribbleprompt", "sw_fastedit"],
+    "license_blocked_candidates": ["scribbleprompt"],
+    "run_secondary_exposed_candidate": ["nninteractive"],
+    "gated_native_protocol_candidate": ["sw_fastedit"],
+    "reference_only": ["prism", "segvol", "magicquill", "scribblesense", "scribbleedit", "his"],
+    "server_policy": "Upload only the minimal fixed runner, adapter, environment lock, license and checkpoint for selected executable methods. Papers, notebooks, unused training projects and reference-only repositories stay local.",
+    "machine_readable_admission_register": {
+      "schema_version": "PETCT-METHOD-ADMISSION-REGISTER-v1.0",
+      "record_source": "typed records below, cross-checked against methods[], protocol_adapters[] and the local paper-code audit",
+      "required_evidence": ["paper_identity", "source_revision", "source_license", "checkpoint_identity_or_explicit_none", "checkpoint_license_or_blocker", "training_exposure", "role", "local_contract_smoke", "minimal_runtime_package", "current_config_runtime_receipt", "admission_state"],
+      "invariants": [
+        "REFERENCE_ONLY implies execution.state=NOT_WIRED and empty argv",
+        "ARGV_WIRED is only static command wiring and never implies execution admission",
+        "execution requires a PASS receipt bound to the current config and all declared adapter/checkpoint/license/environment hashes",
+        "scribbleprompt remains non-runnable until independent checkpoint-license evidence is explicit and hash-bound"
+      ],
+      "records": [
+        {
+          "id": "autopetv_scribble_simulator",
+          "role": "ADAPT",
+          "selection": "ADAPT_PROTOCOL_ONLY",
+          "local_evidence_status": "CLOSED",
+          "evidence_ref": "docs/09-PAPER-CODE-REVIEW-AND-METHOD-SELECTION.md#autopet-v",
+          "server_package_status": "MINIMAL_THREE_FILE_PROTOCOL_PACKAGE_STAGED",
+          "runtime_receipt_status": "CORE_ENVIRONMENT_REVALIDATION_REQUIRED_AFTER_SYNC",
+          "execution_state": "PROTOCOL_ADAPTER_ONLY",
+          "admission_state": "ADMITTED_PROTOCOL_ONLY_NOT_A_MODEL_RESULT",
+          "blockers": []
+        },
+        {
+          "id": "autopetv_official_4ch_nnunet",
+          "role": "REFERENCE_ONLY",
+          "selection": "DESCRIPTIVE_SECONDARY_FULLY_EXPOSED_NOT_ADMITTED",
+          "local_evidence_status": "CLOSED_FOR_REFERENCE",
+          "evidence_ref": "docs/09-PAPER-CODE-REVIEW-AND-METHOD-SELECTION.md#autopet-v",
+          "server_package_status": "NOT_UPLOADED_BY_POLICY",
+          "runtime_receipt_status": "NOT_ISSUED",
+          "execution_state": "NOT_WIRED",
+          "admission_state": "NOT_ADMITTED_TARGET_EXPOSED_AND_WEIGHT_LICENSE_PENDING",
+          "blockers": [
+            {"id": "target_exposed_pretraining", "status": "OPEN_DISQUALIFYING_FOR_HEADLINE", "evidence_ref": "methods[].pretraining"},
+            {"id": "independent_weight_license", "status": "OPEN", "evidence_ref": "methods[].pretraining.local_checkpoint_availability"}
+          ]
+        },
+        {
+          "id": "scribbleprompt",
+          "role": "RUN",
+          "selection": "RUN_CANDIDATE_CHECKPOINT_LICENSE_BLOCKED_NOT_ADMITTED",
+          "local_evidence_status": "PAPER_SOURCE_CLOSED_CHECKPOINT_LICENSE_OPEN",
+          "evidence_ref": "docs/09-PAPER-CODE-REVIEW-AND-METHOD-SELECTION.md#scribbleprompt",
+          "server_package_status": "NOT_UPLOADED",
+          "runtime_receipt_status": "NOT_ISSUED",
+          "execution_state": "NOT_WIRED",
+          "admission_state": "BLOCKED_CHECKPOINT_LICENSE",
+          "blockers": [
+            {"id": "independent_checkpoint_license", "status": "OPEN", "evidence_ref": "methods[].pretraining.checkpoint_license"},
+            {"id": "current_config_runtime_receipt", "status": "NOT_ISSUED", "evidence_ref": "methods[].execution"}
+          ]
+        },
+        {
+          "id": "sw_fastedit",
+          "role": "RUN",
+          "selection": "RUN_CANDIDATE_NATIVE_CLICK_NOT_ADMITTED",
+          "local_evidence_status": "EXACT_PAPER_SOURCE_CLOSED_RUNTIME_METADATA_OPEN",
+          "evidence_ref": "docs/09-PAPER-CODE-REVIEW-AND-METHOD-SELECTION.md#sw-fastedit",
+          "server_package_status": "NOT_UPLOADED",
+          "runtime_receipt_status": "NOT_ISSUED",
+          "execution_state": "NOT_WIRED",
+          "admission_state": "PENDING_CHECKPOINT_LICENSE_ENVIRONMENT_AND_NATIVE_CLICK_ADAPTER",
+          "blockers": [
+            {"id": "interactive_checkpoint_identity_license_hash", "status": "OPEN", "evidence_ref": "methods[].pretraining"},
+            {"id": "channel_preprocessing_and_geometry_adapter", "status": "OPEN", "evidence_ref": "methods[].input_adapter"},
+            {"id": "current_config_runtime_receipt", "status": "NOT_ISSUED", "evidence_ref": "methods[].execution"}
+          ]
+        },
+        {
+          "id": "nninteractive",
+          "role": "RUN",
+          "selection": "RUN_SECONDARY_EXPOSED_PRETRAINING",
+          "local_evidence_status": "PAPER_SOURCE_CHECKPOINT_LICENSE_AND_ADAPTER_CLOSED",
+          "evidence_ref": "docs/09-PAPER-CODE-REVIEW-AND-METHOD-SELECTION.md#nninteractive",
+          "server_package_status": "MINIMAL_RUNTIME_STAGED",
+          "runtime_receipt_status": "HISTORICAL_BINDING_STALE_CURRENT_CONFIG_REBIND_REQUIRED",
+          "execution_state": "ARGV_WIRED",
+          "admission_state": "WIRED_CURRENT_CONFIG_RUNTIME_ADMISSION_REQUIRED_REBIND_QUEUED_OOF_GATED",
+          "blockers": [
+            {"id": "patient_excluded_oof_inputs", "status": "WAITING_FOR_BASELINE", "evidence_ref": "scripts/orchestration/watch_and_run_petct_route_a_after_m0.sh"},
+            {"id": "current_config_runtime_receipt", "status": "STALE_REBIND_REQUIRED", "evidence_ref": "records/runtime-admissions/2026-07-18-server-runtime-admission.json"}
+          ]
+        },
+        {
+          "id": "prism",
+          "role": "REFERENCE_ONLY",
+          "selection": "REFERENCE_ONLY_DO_NOT_RUN",
+          "local_evidence_status": "CLOSED_FOR_REFERENCE",
+          "evidence_ref": "docs/09-PAPER-CODE-REVIEW-AND-METHOD-SELECTION.md#prism",
+          "server_package_status": "NOT_UPLOADED_BY_POLICY",
+          "runtime_receipt_status": "NOT_APPLICABLE",
+          "execution_state": "NOT_WIRED",
+          "admission_state": "NOT_APPLICABLE",
+          "blockers": []
+        },
+        {
+          "id": "segvol",
+          "role": "REFERENCE_ONLY",
+          "selection": "REFERENCE_ONLY_DO_NOT_RUN",
+          "local_evidence_status": "CLOSED_FOR_REFERENCE",
+          "evidence_ref": "docs/09-PAPER-CODE-REVIEW-AND-METHOD-SELECTION.md#segvol-and-conditioning-references",
+          "server_package_status": "NOT_UPLOADED_BY_POLICY",
+          "runtime_receipt_status": "NOT_APPLICABLE",
+          "execution_state": "NOT_WIRED",
+          "admission_state": "NOT_APPLICABLE",
+          "blockers": []
+        },
+        {
+          "id": "mpsl_inspired_p2t",
+          "role": "ADAPT",
+          "selection": "ADAPT_CLEAN_ROOM_INSPIRED_ONLY",
+          "local_evidence_status": "CLOSEST_PRIOR_PAPER_SOURCE_AUDIT_CLOSED",
+          "evidence_ref": "docs/09-PAPER-CODE-REVIEW-AND-METHOD-SELECTION.md#external-p2t-landscape",
+          "server_package_status": "LEGACY_V1_IMPLEMENTATION_RETIRED_V2_REIMPLEMENTATION_NOT_SCHEDULED",
+          "runtime_receipt_status": "NOT_APPLICABLE_UNTIL_V2_PREREGISTRATION",
+          "execution_state": "DEFERRED_FUTURE_ABLATION",
+          "admission_state": "NOT_WIRED_NOT_EXECUTED",
+          "blockers": [
+            {
+              "id": "legacy_three_class_architecture_retired",
+              "status": "OPEN_BLOCKING_CURRENT_EXECUTION",
+              "evidence_ref": "configs/petct_route_a_experiment.json#p2t_architectures"
+            },
+            {
+              "id": "six_class_reimplementation_and_preregistration",
+              "status": "OPEN_DEFERRED_FUTURE_ABLATION",
+              "evidence_ref": "docs/05-MODELS-AND-MODULES.md"
+            }
+          ]
+        },
+        {
+          "id": "film",
+          "role": "ADAPT",
+          "selection": "ADAPT_CLEAN_ROOM_STRUCTURED_SLOT_FILM_ONLY",
+          "local_evidence_status": "PAPER_SOURCE_AUDIT_CLOSED",
+          "evidence_ref": "conditioning_module_references[id=film]",
+          "server_package_status": "PROJECT_IMPLEMENTATION_ONLY",
+          "runtime_receipt_status": "NOT_APPLICABLE_UNTIL_POST_SIMPLE_FIRST_PREREGISTRATION",
+          "execution_state": "DEFERRED_FUTURE_ABLATION",
+          "admission_state": "NOT_CURRENT_MATRIX_NOT_EXECUTED",
+          "blockers": [
+            {
+              "id": "simple_first_primary_must_close_before_film",
+              "status": "OPEN_DEFERRED_FUTURE_ABLATION",
+              "evidence_ref": "configs/petct_route_a_experiment.json#editor_architectures"
+            }
+          ]
+        },
+        {
+          "id": "lvit",
+          "role": "REFERENCE_ONLY",
+          "selection": "REFERENCE_ONLY_SINGLE_SCALE_ADDITIVE_INJECTION",
+          "local_evidence_status": "PAPER_SOURCE_AUDIT_CLOSED",
+          "evidence_ref": "conditioning_module_references[id=lvit]",
+          "server_package_status": "NOT_UPLOADED_BY_POLICY",
+          "runtime_receipt_status": "NOT_APPLICABLE",
+          "execution_state": "NOT_WIRED",
+          "admission_state": "NOT_APPLICABLE",
+          "blockers": []
+        },
+        {
+          "id": "magicquill",
+          "role": "REFERENCE_ONLY",
+          "selection": "REFERENCE_ONLY_DO_NOT_RUN",
+          "local_evidence_status": "CLOSED_FOR_LANDSCAPE_REFERENCE",
+          "evidence_ref": "docs/09-PAPER-CODE-REVIEW-AND-METHOD-SELECTION.md#external-p2t-landscape",
+          "server_package_status": "NOT_UPLOADED_BY_POLICY",
+          "runtime_receipt_status": "NOT_APPLICABLE",
+          "execution_state": "NOT_WIRED",
+          "admission_state": "NOT_APPLICABLE",
+          "blockers": []
+        },
+        {
+          "id": "scribblesense",
+          "role": "REFERENCE_ONLY",
+          "selection": "REFERENCE_ONLY_DO_NOT_RUN",
+          "local_evidence_status": "CLOSED_FOR_LANDSCAPE_REFERENCE",
+          "evidence_ref": "docs/09-PAPER-CODE-REVIEW-AND-METHOD-SELECTION.md#external-p2t-landscape",
+          "server_package_status": "NOT_UPLOADED_BY_POLICY",
+          "runtime_receipt_status": "NOT_APPLICABLE",
+          "execution_state": "NOT_WIRED",
+          "admission_state": "NOT_APPLICABLE",
+          "blockers": []
+        },
+        {
+          "id": "scribbleedit",
+          "role": "REFERENCE_ONLY",
+          "selection": "REFERENCE_ONLY_DO_NOT_RUN",
+          "local_evidence_status": "CLOSED_FOR_LANDSCAPE_REFERENCE",
+          "evidence_ref": "docs/09-PAPER-CODE-REVIEW-AND-METHOD-SELECTION.md#external-p2t-landscape",
+          "server_package_status": "NOT_UPLOADED_BY_POLICY",
+          "runtime_receipt_status": "NOT_APPLICABLE",
+          "execution_state": "NOT_WIRED",
+          "admission_state": "NOT_APPLICABLE",
+          "blockers": []
+        },
+        {
+          "id": "his",
+          "role": "REFERENCE_ONLY",
+          "selection": "REFERENCE_ONLY_DO_NOT_RUN",
+          "local_evidence_status": "CLOSED_FOR_LANDSCAPE_REFERENCE",
+          "evidence_ref": "docs/09-PAPER-CODE-REVIEW-AND-METHOD-SELECTION.md#external-p2t-landscape",
+          "server_package_status": "NOT_UPLOADED_BY_POLICY",
+          "runtime_receipt_status": "NOT_APPLICABLE",
+          "execution_state": "NOT_WIRED",
+          "admission_state": "NOT_APPLICABLE",
+          "blockers": []
+        }
+      ]
+    }
+  },
+  "petct_fusion_source_audit": {
+    "status": "CORE_LOCAL_PAPER_CODE_AUDIT_CLOSED_AATSN_LEGAL_FULLTEXT_PENDING_NOT_EXECUTED",
+    "report": "../../Thesis/PET-CT multimodal fusion/PETCT-MULTIMODAL-FUSION-PAPER-CODE-AUDIT.md",
+    "primary": "channel_wise_pet_ct_early_concat_shared_encoder",
+    "primary_rationale": "A strong simple and reproducible baseline with direct AutoPET III ResEncL precedent; this does not claim that early concat is optimal.",
+    "preregistered_adapt_sequence": [
+      "dual_shallow_stem_bottleneck_fusion",
+      "modality_gated_fusion",
+      "single_scale_budget_matched_bidirectional_pet_ct_cross_attention",
+      "separate_misalignment_da_robustness_ablation"
+    ],
+    "causal_label_boundary": "PET-to-CT feature cross-attention and structured-intent-token-to-image cross-attention are different interfaces and must remain separate experiment labels and attribution tables.",
+    "sources": [
+      {
+        "id": "autopet3_lesiontracer",
+        "repository": "https://github.com/MIC-DKFZ/autopet-3-submission",
+        "pinned_commit": "257afc3b197f8648ab5ba5e1755adabf45a3028a",
+        "license": "Apache-2.0",
+        "decision": "REFERENCE_AND_CLEAN_ROOM_ADAPT_ONLY",
+        "server_policy": "Do not upload the full fork or final weights. The checkpoint is exposed to public FDG and PSMA training and is ineligible for the target-unseen headline table."
+      },
+      {
+        "id": "mirror_unet",
+        "repository": "https://github.com/Zrrr1997/autoPET_challenge_mirrorUNet",
+        "pinned_commit": "5deaa547d3e0d94fe23b372351e738b2da274448",
+        "license": "NOT_FOUND",
+        "decision": "REFERENCE_AND_CLEAN_ROOM_ADAPT_ONLY",
+        "server_policy": "Do not upload or run. The exact split CSV is absent and public code defaults diverge from the paper."
+      },
+      {
+        "id": "lymphoma_msif",
+        "repository": "https://github.com/chenzhao2023/lymphoma_seg",
+        "pinned_commit": "633d7af24947e0dd7c823a03ae5bcc73b894a197",
+        "license": "NOT_FOUND",
+        "decision": "REFERENCE_AND_CLEAN_ROOM_ADAPT_ONLY",
+        "server_policy": "Do not upload or run. Public source lacks fold files, weights, an environment lock and a repository license, and differs from the paper in normalization, loss and metric wiring."
+      },
+      {
+        "id": "aatsn",
+        "paper_doi": "10.1016/j.compbiomed.2023.106748",
+        "paper_access": "PENDING_LEGAL_FULLTEXT_ABSTRACT_ONLY",
+        "paper_license": "Elsevier all rights reserved",
+        "repository": null,
+        "pinned_commit": null,
+        "license": "NOT_FOUND",
+        "decision": "PENDING_LEGAL_FULLTEXT_REFERENCE_ONLY_PAPER_ONLY_OFFICIAL_CODE_NOT_FOUND",
+        "server_policy": "Do not infer loss or split from the abstract, substitute an unverified third-party implementation, upload or run."
+      }
+    ]
+  },
+  "conditioning_module_references": [
+    {
+      "id": "film",
+      "decision": "ADAPT_CLEAN_ROOM_STRUCTURED_SLOT_FILM_ONLY",
+      "server_artifact_required": false,
+      "paper": {
+        "path": "../../Thesis/P2T and text prompting/2018_Perez_FiLM_Visual_Reasoning_with_a_General_Conditioning_Layer_AAAI.pdf",
+        "sha256": "eaa3074c640302679289a98d96a3f0fc20f1385c919c6d5429405e1c6f672fe4",
+        "license": "AAAI copyright; all rights reserved"
+      },
+      "source": {
+        "repository": "https://github.com/ethanjperez/film",
+        "pinned_commit": "fe43ddf8a22b339dcca2efa07091ce9d498955cf",
+        "local_source_snapshot": "upstream/FiLM",
+        "license": "CC BY-NC 4.0",
+        "license_file": "upstream/FiLM/LICENSE",
+        "license_sha256": "2dd05518b1e6ee64b8f319a0d8ecfa55e02b6261dcabaea2c6ccf979b4bf7ef5"
+      },
+      "paper_code_contract": "Question-conditioned channel-wise gamma and beta modulation is aligned; only the minimal mathematical interface is reimplemented for structured target/scope slots.",
+      "server_policy": "Do not upload or run the CLEVR repository. Upload only the project's independently implemented tested FiLM module when its internal fusion ablation is scheduled."
+    },
+    {
+      "id": "lvit",
+      "decision": "REFERENCE_ONLY_SINGLE_SCALE_ADDITIVE_INJECTION",
+      "server_artifact_required": false,
+      "paper": {
+        "path": "../../Thesis/P2T and text prompting/2023_Li_LViT_Language_Meets_Vision_Transformer_in_Medical_Image_Segmentation_arXiv2206.14718.pdf",
+        "arxiv": "2206.14718v4",
+        "sha256": "719860a479b3c114c0ad9aa23ea0e6d794658116021c74c104a23177f0e20a93",
+        "license": "arXiv non-exclusive distribution license"
+      },
+      "source": {
+        "repository": "https://github.com/HUANGLIZI/LViT",
+        "pinned_commit": "a9b0b412415928d9c6a09459f66b263ab1a2bf06",
+        "local_source_snapshot": "upstream/LViT",
+        "license": "MIT",
+        "license_file": "upstream/LViT/LICENSE",
+        "license_sha256": "29805493b725580ce2c72c3574c3c0fb50e3de658d2cbe2fccdb609e11c8cf97"
+      },
+      "paper_code_contract": "Official source projects 768-d BERT features down to 64-d but injects them additively only in the first DownViT; later Down/Up blocks do not use text and there is no text-image cross-attention. The paper's EPI/LV-loss semi-supervised pipeline is not wired into the released main training entry.",
+      "server_policy": "Reference only. Do not upload the repository, BERT checkpoint or training project, and do not cite it as multi-scale injection or cross-attention evidence."
+    }
+  ],
+  "protocol_adapters": [
+    {
+      "id": "autopetv_scribble_simulator",
+      "selection": "ADAPT_PROTOCOL_ONLY",
+      "display_name": "autoPET V pinned three-strategy scribble simulator",
+      "source": {
+        "repository": "https://github.com/lab-midas/autoPETV",
+        "pinned_commit": "4a2026866bfacc812492cfc7e6a8c54ac3c4f703",
+        "local_source_snapshot": "upstream/autoPETV",
+        "simulator_path": "upstream/autoPETV/interactive/simulate_scribbles.py",
+        "metrics_path": "upstream/autoPETV/metrics.py",
+        "license": "Apache-2.0",
+        "license_file": "upstream/autoPETV/LICENSE",
+        "license_sha256": "1eb85fc97224598dad1852b5d6483bbcf0aa8608790dcc657a5a2a761ae9c8c6"
+      },
+      "role": "Generate and freeze centerline/random/boundary scribbles through the project adapter; this is not the official four-channel nnU-Net model or a model result.",
+      "server_policy": "Only the pinned simulator, root metrics.py when needed, Apache-2.0 LICENSE, project wrapper and tests may enter a minimal preprocessing package. The official model weights are excluded."
+    }
+  ],
+  "execution_policy": {
+    "default_mode": "DRY_RUN",
+    "confirmation_token": "RUN_EXTERNAL_COMPARATOR_NO_DOWNLOADS",
+    "network_policy": "NO_DOWNLOADS",
+    "subprocess_policy": "argv list only; shell=False; offline environment variables forced",
+    "result_truth": "No method below has a PET/CT scientific result unless a validated output manifest is produced by a separately authorized execution and shared evaluation. Local imports, checkpoint loads, API smoke checks and unit tests are software evidence only."
+  },
+  "input_manifest_contract": {
+    "schema_version": "PETCT-EXTERNAL-COMPARATOR-INPUT-v1.0",
+    "record_key": "records",
+    "granularity": "one record per case, OOF state, correction step, and frozen scribble",
+    "min_records": 1,
+    "required_fields": [
+      {"name": "case_id", "type": "string"},
+      {"name": "patient_id", "type": "string"},
+      {"name": "split", "type": "string", "enum": ["train", "validation", "test"]},
+      {"name": "fold", "type": "integer"},
+      {"name": "step", "type": "integer"},
+      {"name": "pet_path", "type": "string"},
+      {"name": "ct_path", "type": "string"},
+      {"name": "m0_path", "type": "string"},
+      {"name": "fg_scribble_path", "type": "string"},
+      {"name": "bg_scribble_path", "type": "string", "nullable": true},
+      {"name": "original_grid_reference", "type": "string"},
+      {"name": "scribble_strategy", "type": "string", "enum": ["centerline", "random", "boundary"]},
+      {"name": "scribble_polarity", "type": "string", "enum": ["foreground"]}
+    ],
+    "firewall": "GT, FN/FP residual masks, gold intent, and evaluation targets are forbidden model inputs. They remain in the offline construction/evaluation plane."
+  },
+  "output_manifest_contract": {
+    "schema_version": "PETCT-EXTERNAL-COMPARATOR-OUTPUT-v1.0",
+    "record_key": "records",
+    "granularity": "one model output per input record",
+    "min_records": 1,
+    "required_fields": [
+      {"name": "case_id", "type": "string"},
+      {"name": "patient_id", "type": "string"},
+      {"name": "method_id", "type": "string"},
+      {"name": "prediction_path", "type": "string"},
+      {"name": "original_grid_reference", "type": "string"},
+      {"name": "prediction_semantics", "type": "string", "enum": ["full_mask", "operation_conditioned_delta", "legacy_add_only_residual"]},
+      {"name": "runtime_seconds", "type": "number", "nullable": true},
+      {"name": "peak_gpu_memory_mib", "type": "number", "nullable": true},
+      {"name": "source_checkpoint_id", "type": "string"},
+      {"name": "status", "type": "string", "enum": ["complete", "failed"]}
+    ],
+    "grid_rule": "prediction_path must identify a mask restored to the original PET/CT grid before shared evaluation",
+    "failure_rule": "failed records remain explicit; they are never silently dropped from the patient denominator"
+  },
+  "metrics_contract": {
+    "schema_version": "PETCT-EXTERNAL-COMPARATOR-METRICS-v1.0",
+    "computed_by": "shared project evaluator after original-grid restoration; never copied from model-native reports",
+    "aggregation": "patient-clustered with method and correction step retained",
+    "required_metrics": [
+      "dice",
+      "dice_delta_vs_m0",
+      "dmm",
+      "false_positive_volume_ml",
+      "false_negative_volume_ml",
+      "authorized_residual_recall",
+      "prompt_distal_recall",
+      "unauthorized_addition_volume_ml",
+      "m0_preservation_rate",
+      "other_lesion_harm",
+      "unintended_bridge_or_merge_rate",
+      "runtime_seconds",
+      "peak_gpu_memory_mib"
+    ],
+    "supplementary_multistep_metrics": ["interaction_auc_dice", "interaction_auc_dmm"]
+  },
+  "methods": [
+    {
+      "id": "autopetv_official_4ch_nnunet",
+      "role": "REFERENCE_ONLY",
+      "admission_state": "NOT_ADMITTED_TARGET_EXPOSED_AND_WEIGHT_LICENSE_PENDING",
+      "selection": "DESCRIPTIVE_SECONDARY_FULLY_EXPOSED_NOT_ADMITTED",
+      "display_name": "Official autoPET V four-channel nnU-Net",
+      "category": "official_four_channel_fully_exposed_descriptive_model",
+      "evidence_status": "PINNED_SOURCE_AND_WEIGHT_MATERIAL_PRESENT_WEIGHT_LICENSE_PATIENT_MAPPING_AND_PROJECT_RESULT_ABSENT",
+      "source": {
+        "repository": "https://github.com/lab-midas/autoPETV",
+        "pinned_commit": "4a2026866bfacc812492cfc7e6a8c54ac3c4f703",
+        "local_source_snapshot": "upstream/autoPETV"
+      },
+      "prompt_modalities": ["foreground_scribble_heatmap", "background_scribble_heatmap"],
+      "spatial_dimensionality": "3D",
+      "state_interface": "Does not consume M0 as a channel; re-predicts a full mask from CT, PET, FG, and BG maps.",
+      "pretraining": {
+        "kind": "official released checkpoint or separately retrained nnU-Net",
+        "current_psma_v3_exposure": "KNOWN_PUBLIC_COHORT_EXPOSURE",
+        "exposure_label": "FULLY_EXPOSED_FDG_PSMA_DEEPPSMA_DESCRIPTIVE_ONLY",
+        "local_checkpoint_availability": "WEIGHT_MATERIAL_PRESENT_BUT_NOT_ADMITTED",
+        "checkpoint_license": "UNVERIFIED_INDEPENDENT_WEIGHT_LICENSE",
+        "leakage_policy": "The official material is trained across FDG, PSMA and DeepPSMA and is treated as fully exposed. It is descriptive only and excluded from execution and every headline/main table."
+      },
+      "headline": {
+        "eligible": false,
+        "reason": "Fully exposed FDG/PSMA/DeepPSMA training, unclosed independent weight license/patient mapping, and a full-mask/no-M0 interface make this a descriptive secondary only; it is not execution-admitted."
+      },
+      "contracts": {
+        "input_manifest": "PETCT-EXTERNAL-COMPARATOR-INPUT-v1.0",
+        "output_manifest": "PETCT-EXTERNAL-COMPARATOR-OUTPUT-v1.0",
+        "metrics": "PETCT-EXTERNAL-COMPARATOR-METRICS-v1.0"
+      },
+      "input_adapter": {
+        "consumes": ["ct_path", "pet_path", "fg_scribble_path", "bg_scribble_path", "original_grid_reference"],
+        "prompt_translation": "Pinned official FG/BG coordinate-to-heatmap path; POC supplies FG and an empty BG map.",
+        "m0_role": "M0 is retained only as the no-op baseline for delta metrics, not passed into this model."
+      },
+      "output_adapter": {
+        "prediction_semantics": "full_mask",
+        "required_action": "restore official prediction to original_grid_reference and emit the unified output manifest"
+      },
+      "metric_set": ["dice", "dice_delta_vs_m0", "dmm", "false_positive_volume_ml", "false_negative_volume_ml", "authorized_residual_recall", "prompt_distal_recall", "unauthorized_addition_volume_ml", "m0_preservation_rate", "other_lesion_harm", "unintended_bridge_or_merge_rate", "runtime_seconds", "peak_gpu_memory_mib"],
+      "execution": {"state": "NOT_WIRED", "argv": [], "cwd": null, "network_policy": "NO_DOWNLOADS", "notes": "Do not upload or run this model/weights and do not place it in the main table. The separate autopetv_scribble_simulator protocol adapter may be used through the project wrapper; upstream interactive_loop.py and DMM/AUC handling are not the final evaluator."}
+    },
+    {
+      "id": "scribbleprompt",
+      "role": "RUN",
+      "admission_state": "BLOCKED_CHECKPOINT_LICENSE",
+      "selection": "RUN_CANDIDATE_CHECKPOINT_LICENSE_BLOCKED_NOT_ADMITTED",
+      "display_name": "ScribblePrompt",
+      "category": "generic_2d_biomedical_spatial_editor",
+      "evidence_status": "PINNED_SOURCE_AND_CHECKPOINT_PRESENT_CHECKPOINT_LICENSE_EXECUTION_ADMISSION_AND_RESULTS_ABSENT",
+      "source": {
+        "repository": "https://github.com/halleewong/ScribblePrompt",
+        "pinned_commit": "182c44975f77749b559974ce8db558c8bde57788",
+        "local_source_snapshot": "upstream/ScribblePrompt",
+        "license": "Apache-2.0",
+        "license_file": "upstream/ScribblePrompt/LICENSE",
+        "license_sha256": "1eb85fc97224598dad1852b5d6483bbcf0aa8608790dcc657a5a2a761ae9c8c6"
+      },
+      "prompt_modalities": ["scribble", "click", "box", "previous_mask"],
+      "spatial_dimensionality": "2D",
+      "state_interface": "Consumes previous prediction and signed 2D spatial prompts; it does not infer textual target or scope.",
+      "pretraining": {
+        "kind": "generic biomedical multi-dataset model",
+        "current_psma_v3_exposure": "UNVERIFIED",
+        "local_checkpoint_availability": {
+          "status": "PRESENT_HASHED",
+          "path": "models/ScribblePrompt/ScribblePrompt_unet_v1_nf192_res128.pt",
+          "bytes": 15977486,
+          "sha256": "43f57ee8fa8ec529c31be281e06749f9e629b30157bbbcc9baf200cddec1acbe"
+        },
+        "checkpoint_license": "UNRESOLVED_NO_INDEPENDENT_WEIGHT_LICENSE_FOUND",
+        "leakage_policy": "Complete dataset/checkpoint exposure and independent checkpoint-license audit before upload, execution, or any quantitative row."
+      },
+      "headline": {"eligible": false, "reason": "Checkpoint license is unresolved, and the 2D-to-whole-body-3D bridge and PSMA exposure are unverified. This is a RUN candidate, not an execution-admitted method."},
+      "contracts": {"input_manifest": "PETCT-EXTERNAL-COMPARATOR-INPUT-v1.0", "output_manifest": "PETCT-EXTERNAL-COMPARATOR-OUTPUT-v1.0", "metrics": "PETCT-EXTERNAL-COMPARATOR-METRICS-v1.0"},
+      "input_adapter": {
+        "consumes": ["pet_path", "ct_path", "m0_path", "fg_scribble_path", "original_grid_reference"],
+        "prompt_translation": "Use the prompted axial PET slice, resize explicitly to the checkpoint's 128x128 single-grayscale contract, pass the same frozen positive scribble, keep negative scribble and box empty, and add no clicks or oracle slices.",
+        "m0_role": "Map M0 to the method's previous-mask input when supported; otherwise record the interface mismatch."
+      },
+      "output_adapter": {"prediction_semantics": "full_mask", "required_action": "reconstruct the declared 3D output policy, restore original grid, and emit unified output manifest"},
+      "metric_set": ["dice", "dice_delta_vs_m0", "dmm", "false_positive_volume_ml", "false_negative_volume_ml", "authorized_residual_recall", "prompt_distal_recall", "unauthorized_addition_volume_ml", "m0_preservation_rate", "other_lesion_harm", "unintended_bridge_or_merge_rate", "runtime_seconds", "peak_gpu_memory_mib"],
+      "execution": {"state": "NOT_WIRED", "argv": [], "cwd": null, "network_policy": "NO_DOWNLOADS", "notes": "Do not upload or execute while checkpoint license remains unresolved. A local checkpoint load, API smoke, or adapter unit test is software evidence only and is not a scientific result or execution admission."}
+    },
+    {
+      "id": "sw_fastedit",
+      "role": "RUN",
+      "admission_state": "PENDING_CHECKPOINT_LICENSE_ENVIRONMENT_AND_NATIVE_CLICK_ADAPTER",
+      "selection": "RUN_CANDIDATE_NATIVE_CLICK_NOT_ADMITTED",
+      "display_name": "Sliding Window FastEdit",
+      "category": "whole_body_pet_interactive_click_editor",
+      "evidence_status": "PINNED_SOURCE_AND_EXACT_LOCAL_FULLTEXT_PAPER_CODE_AUDIT_PRESENT_CHECKPOINT_LICENSE_ENVIRONMENT_ADAPTER_AND_RESULTS_ABSENT",
+      "source": {
+        "repository": "https://github.com/matt3o/AutoPET2-Submission",
+        "pinned_commit": "2ab08a4aa9cd4256781b2d99cda6b67c28b03c16",
+        "local_source_snapshot": "upstream/AutoPET2-Submission",
+        "license": "Apache-2.0",
+        "license_sha256": "1eb85fc97224598dad1852b5d6483bbcf0aa8608790dcc657a5a2a761ae9c8c6"
+      },
+      "paper_evidence": [
+        {
+          "path": "../../Thesis/3D promptable baselines/2023_Hadlich_Sliding_Window_FastEdit.pdf",
+          "bytes": 589042,
+          "pages": 5,
+          "sha256": "dcfdc369578bc09c105a2803ad3e6670a5580041b2c52706209027eafc609c19",
+          "arxiv": "2311.14482v1",
+          "license": "CC BY 4.0",
+          "role": "EXACT_SW_FASTEDIT_INTERACTIVE_FULLTEXT"
+        },
+        {
+          "path": "../../Thesis/3D promptable baselines/2023_Hadlich_AutoPET_Challenge_Sliding_Window_UNet.pdf",
+          "sha256": "880bbecd73f1adc3223485a5899e0dd47c2854e6a08441ff5361203123113e81",
+          "role": "AUTOPET_II_FINAL_NONINTERACTIVE_PET_ONLY_SUBMISSION"
+        },
+        {
+          "path": "../../Thesis/3D promptable baselines/2023_Marinov_Guiding_the_Guidance.pdf",
+          "sha256": "c8ab3791b55fa0879c266301f7a31fc0d9ec7cfb5351a7c3a31893f38f77d069",
+          "role": "GUIDANCE_REPRESENTATION_PREDECESSOR"
+        }
+      ],
+      "paper_code_interface_audit": "CLOSED_FOR_EXACT_PAPER_AND_PINNED_SOURCE_PET_ONLY_EARLY_CONCAT_3D_NATIVE_PAIRED_CORRECTIVE_CLICK_INTERFACE",
+      "prompt_modalities": ["foreground_click", "background_click"],
+      "paper_prompt_labels": {"foreground_click": "tumor click", "background_click": "background click"},
+      "spatial_dimensionality": "3D",
+      "state_interface": "Whole-volume/sliding-window PET interaction through sparse positive and negative clicks. The network input has PET plus foreground/background guidance channels and no previous-mask/M0 channel.",
+      "guidance_encoding": {
+        "paper_contract": "Each tumor/background point is represented as a radius-1-voxel 3D sphere in its own channel.",
+        "pinned_source_contract": "EncodeGuidanceSignal applies a sigma-1 Gaussian and, with disks enabled, thresholds at >0.1; the source comment describes the result as approximately radius 3.",
+        "consistency_status": "DOCUMENTED_PAPER_CODE_DIFFERENCE_DO_NOT_COLLAPSE"
+      },
+      "network_contract": {
+        "fusion": "early_input_concatenation",
+        "input_channels": ["PET", "tumor_guidance", "background_guidance"],
+        "backbone": "six_level_3D_DynUNet",
+        "sliding_window": [128, 128, 128],
+        "overlap": 0.25,
+        "loss": "Paper does not specify loss; the pinned source defaults to DiceCELoss and optionally exposes DiceLoss."
+      },
+      "paper_training_contract": {
+        "dataset": "AutoPET FDG tumor-positive volumes",
+        "patient_disjoint_split": {"train": 396, "test": 105},
+        "pet_percentile_clip": [0.05, 99.95],
+        "crop": [224, 224, 224],
+        "interactive_epochs": 200,
+        "initial_learning_rate": 0.0001,
+        "scheduler": "cosine_annealing",
+        "reproduction_warning": "The generic source loader is not patient-aware and CLI defaults differ; a frozen patient-disjoint manifest and explicit paper settings are required for reproduction."
+      },
+      "interaction_budget": {
+        "unit": "paired_round",
+        "paper_rounds": 10,
+        "points_per_complete_round": 2,
+        "maximum_simulated_points": 20,
+        "require_actual_point_count": true,
+        "required_fields": ["interaction_rounds", "tumor_point_count", "background_point_count", "total_point_count"],
+        "warning": "Dice@10/10-click shorthand denotes ten paired corrective rounds, not an unambiguous total of ten point placements."
+      },
+      "pretraining": {
+        "kind": "method-specific supervised interactive model",
+        "current_psma_v3_exposure": "UNVERIFIED",
+        "paper_psma_v3_exposure": "NOT_REPORTED",
+        "known_training_exposure": "AUTOPET_FDG_TUMOR_POSITIVE_COHORT",
+        "hecktor_role": "ZERO_SHOT_EVALUATION_ONLY_NOT_TRAINING",
+        "local_checkpoint_availability": "ABSENT_INTERACTIVE_WEIGHT_LINK_IDENTIFIED_NOT_DOWNLOADED",
+        "checkpoint_license": "UNRESOLVED_INDEPENDENT_WEIGHT_LICENSE",
+        "pretraining_channel_contract": "UNKNOWN_ONE_CHANNEL_THEN_MIGRATED_OR_THREE_CHANNELS_WITH_ZERO_GUIDANCE",
+        "leakage_policy": "The exact paper establishes AutoPET FDG tumor-positive training and HECKTOR zero-shot evaluation, but does not report PSMA-v3 training. Audit independent weight license/hash, checkpoint-to-paper-row identity, first-layer channel shape, preprocessing and overlap before use. The separate non-interactive challenge weights are not interchangeable with the three-channel interactive model."
+      },
+      "headline": {"eligible": false, "reason": "This is a native paired-click, PET-only, 3D full-mask method with no CT or M0 input. Its click-versus-scribble contract mismatch and absent interactive checkpoint/license/environment/adapter exclude it from the matched one-scribble and target-unseen headline tables."},
+      "contracts": {"input_manifest": "PETCT-EXTERNAL-COMPARATOR-INPUT-v1.0", "output_manifest": "PETCT-EXTERNAL-COMPARATOR-OUTPUT-v1.0", "metrics": "PETCT-EXTERNAL-COMPARATOR-METRICS-v1.0"},
+      "input_adapter": {
+        "consumes": ["pet_path", "original_grid_reference"],
+        "prompt_translation": "Run only under a separately labelled native-click protocol. An automated discrepancy click is an oracle simulator and must record the actual foreground/background point count per round. Do not compress the frozen scribble into a click and call it a matched one-scribble comparison.",
+        "m0_role": "M0 is retained only as the evaluation baseline; it is not a network input in the audited implementation."
+      },
+      "output_adapter": {"prediction_semantics": "full_mask", "required_action": "restore original grid and emit unified output manifest"},
+      "metric_set": ["dice", "dice_delta_vs_m0", "dmm", "false_positive_volume_ml", "false_negative_volume_ml", "authorized_residual_recall", "prompt_distal_recall", "unauthorized_addition_volume_ml", "m0_preservation_rate", "other_lesion_harm", "unintended_bridge_or_merge_rate", "runtime_seconds", "peak_gpu_memory_mib"],
+      "execution": {"state": "NOT_WIRED", "argv": [], "cwd": null, "network_policy": "NO_DOWNLOADS", "notes": "Gated candidate only. Do not upload or run until the interactive (not challenge non-interactive) checkpoint, independent checkpoint license/hash, three-channel strict-load, preprocessing/spacing/overlap contract, exposure audit, original-grid geometry adapter and isolated environment/API smoke are complete. Native full-mask and union-with-M0 outputs must remain separate from the one-scribble table."}
+    },
+    {
+      "id": "prism",
+      "role": "REFERENCE_ONLY",
+      "admission_state": "NOT_APPLICABLE",
+      "selection": "REFERENCE_ONLY_DO_NOT_RUN",
+      "display_name": "PRISM",
+      "category": "from_scratch_default_3d_prompt_token_reference",
+      "evidence_status": "PINNED_SOURCE_SNAPSHOT_PRESENT_CHECKPOINT_ENVIRONMENT_AND_RESULTS_ABSENT",
+      "source": {"repository": "https://github.com/MedICL-VU/PRISM", "pinned_commit": "e063e27dda3c349060ba78ec5be359d86ddde545", "local_source_snapshot": "upstream/PRISM"},
+      "prompt_modalities": ["point", "box", "scribble", "previous_mask"],
+      "spatial_dimensionality": "3D",
+      "state_interface": "Iterative full-mask refinement with sparse prompts and previous logits; no textual target/scope output.",
+      "pretraining": {
+        "kind": "public implementation defaults to from-scratch; SAM-Med3D warm start is optional",
+        "current_psma_v3_exposure": "UNVERIFIED",
+        "local_checkpoint_availability": "UNVERIFIED",
+        "leakage_policy": "Public default is from-scratch. Only if an optional SAM-Med3D warm start is selected must that lineage also be audited; any task checkpoint exposure remains separate."
+      },
+      "headline": {"eligible": false, "reason": "PRISM is reference-only: the public default is from-scratch, but no admitted PET/PSMA checkpoint or matched M0-residual interface exists, and prompt/data/task contracts differ. Optional SAM-Med3D warm start is not the default."},
+      "contracts": {"input_manifest": "PETCT-EXTERNAL-COMPARATOR-INPUT-v1.0", "output_manifest": "PETCT-EXTERNAL-COMPARATOR-OUTPUT-v1.0", "metrics": "PETCT-EXTERNAL-COMPARATOR-METRICS-v1.0"},
+      "input_adapter": {
+        "consumes": ["pet_path", "ct_path", "m0_path", "fg_scribble_path", "original_grid_reference"],
+        "prompt_translation": "Use exactly the frozen foreground scribble; boxes, extra points, and additional interactive rounds are forbidden in the one-step matched row.",
+        "m0_role": "Map patient-excluded M0 to previous-mask/logit input without deriving prompts from GT at inference."
+      },
+      "output_adapter": {"prediction_semantics": "full_mask", "required_action": "restore original grid and emit unified output manifest"},
+      "metric_set": ["dice", "dice_delta_vs_m0", "dmm", "false_positive_volume_ml", "false_negative_volume_ml", "authorized_residual_recall", "prompt_distal_recall", "unauthorized_addition_volume_ml", "m0_preservation_rate", "other_lesion_harm", "unintended_bridge_or_merge_rate", "runtime_seconds", "peak_gpu_memory_mib"],
+      "execution": {"state": "NOT_WIRED", "argv": [], "cwd": null, "network_policy": "NO_DOWNLOADS", "notes": "Reference-only two-way prompt-token cross-attention source. Do not upload or execute in the current matrix; any future token-fusion arm must be a separately pre-registered project implementation."}
+    },
+    {
+      "id": "nninteractive",
+      "role": "RUN",
+      "admission_state": "WIRED_CURRENT_CONFIG_RUNTIME_ADMISSION_REQUIRED_REBIND_QUEUED_OOF_GATED",
+      "selection": "RUN_SECONDARY_EXPOSED_PRETRAINING",
+      "display_name": "nnInteractive",
+      "category": "foundation_3d_open_set_interactive",
+      "evidence_status": "PINNED_SOURCE_OFFICIAL_V1_CHECKPOINT_LOCAL_FULLTEXT_PAPER_CODE_AUDIT_AND_SERVER_ENVIRONMENT_API_SMOKE_PRESENT_RESULTS_ABSENT",
+      "source": {
+        "repository": "https://github.com/MIC-DKFZ/nnInteractive",
+        "pinned_commit": "bbe12fdccc876cb2d4e0a47133811e362608e000",
+        "local_source_snapshot": "upstream/nnInteractive",
+        "license": "Apache-2.0",
+        "license_file": "upstream/nnInteractive/LICENSE",
+        "license_sha256": "3888a43f438f1834561474a1b16cfd0b11037c7a225935a8b89558aac550167e"
+      },
+      "prompt_modalities": ["point", "scribble", "box", "lasso", "initial_segmentation"],
+      "spatial_dimensionality": "3D",
+      "state_interface": "3D open-set interactive segmentation with an audited add_initial_seg_interaction/prev_seg path, so patient-excluded M0 can be supplied as the initial label together with the frozen scribble.",
+      "pretraining": {
+        "kind": "foundation model trained on 120+ volumetric datasets",
+        "current_psma_v3_exposure": "KNOWN_PUBLIC_COHORT_EXPOSURE",
+        "local_checkpoint_availability": {
+          "status": "PRESENT_HASHED",
+          "path": "models/nnInteractive/nnInteractive_v1.0/fold_0/checkpoint_final.pth",
+          "bytes": 411387150,
+          "sha256": "b3ac4421f85457bbd1aa0d87f5e67bcb7bc8e2ce6b824b6ac45077cc5d630ea9",
+          "license": "CC BY-NC-SA 4.0",
+          "license_file": "models/nnInteractive/nnInteractive_v1.0/LICENSE",
+          "license_sha256": "4f60f5747c5506020923866690c2a41a3c74ffa85b7371eac2b02e23185f91d5"
+        },
+        "leakage_policy": "The published corpus includes PET/CT cohorts such as AutoPET2 and HECKTOR. Exact PSMA-v3 patient exposure remains UNKNOWN, so results stay in a separately labelled exposed-pretraining secondary table; code and checkpoint licenses are tracked separately."
+      },
+      "headline": {"eligible": false, "reason": "The local full-text paper, inference source and hash-bound server environment/API smoke close the initial-label M0 plus scribble execution interface. Broad PET/CT pretraining and unknown exact PSMA-v3 exposure still exclude it from target-unseen headline comparison; every result remains a separately labelled exposed-pretraining secondary."},
+      "contracts": {"input_manifest": "PETCT-EXTERNAL-COMPARATOR-INPUT-v1.0", "output_manifest": "PETCT-EXTERNAL-COMPARATOR-OUTPUT-v1.0", "metrics": "PETCT-EXTERNAL-COMPARATOR-METRICS-v1.0"},
+      "input_adapter": {
+        "consumes": ["pet_path", "ct_path", "m0_path", "fg_scribble_path", "original_grid_reference"],
+        "prompt_translation": "Use the same frozen scribble and one-step budget; do not replace it with a box, lasso, or extra clicks.",
+        "m0_role": "Pass patient-excluded M0 through add_initial_seg_interaction as prev_seg; record that this is a native supported interaction rather than a newly trained channel."
+      },
+      "output_adapter": {"prediction_semantics": "full_mask", "required_action": "restore original grid and emit unified output manifest"},
+      "metric_set": ["dice", "dice_delta_vs_m0", "dmm", "false_positive_volume_ml", "false_negative_volume_ml", "authorized_residual_recall", "prompt_distal_recall", "unauthorized_addition_volume_ml", "m0_preservation_rate", "other_lesion_harm", "unintended_bridge_or_merge_rate", "runtime_seconds", "peak_gpu_memory_mib"],
+      "execution": {
+        "state": "ARGV_WIRED",
+        "argv": [
+          "{project_root}/envs/nninteractive_v1/bin/python",
+          "{project_root}/scripts/comparators/nninteractive_petct_adapter.py",
+          "--input-manifest",
+          "{input_manifest}",
+          "--output-manifest",
+          "{output_manifest}",
+          "--output-dir",
+          "{output_manifest}.predictions",
+          "--model-folder",
+          "{project_root}/models/nnInteractive/nnInteractive_v1.0",
+        "--config",
+        "{project_root}/configs/petct_external_comparators.json",
+        "--experiment-config",
+        "{experiment_config}",
+        "--learning-split",
+        "{learning_split}",
+        "--partition",
+        "{partition}",
+        "--output-policy",
+          "union_with_m0",
+          "--device",
+          "cuda:0"
+        ],
+        "cwd": "{project_root}",
+        "network_policy": "NO_DOWNLOADS",
+        "admission": {
+          "receipt": "{project_root}/envs/nninteractive_v1.READY.json",
+          "schema_version": "PETCT-NNINTERACTIVE-ENV-v1.1",
+          "status": "PASS",
+          "config_sha256_field": "config_sha256",
+          "required_pass_fields": [
+            "model_load_smoke",
+            "initial_m0_api_smoke",
+            "scribble_api_smoke",
+            "adapter_cli_smoke"
+          ],
+          "exact_fields": {
+            "source_commit": "bbe12fdccc876cb2d4e0a47133811e362608e000",
+            "source_bundle_sha256": "49628450dabf43947bc661e6c1675b514dcd07aa146bf785498a9b141a6c350d",
+            "source_license": "Apache-2.0",
+            "license": "CC BY-NC-SA 4.0",
+            "synthetic_only": true,
+            "scientific_prediction_produced": false,
+            "network_policy_at_runtime": "NO_DOWNLOADS"
+          },
+          "file_sha256_fields": {
+            "adapter_sha256": "{project_root}/scripts/comparators/nninteractive_petct_adapter.py",
+            "checkpoint_sha256": "{project_root}/models/nnInteractive/nnInteractive_v1.0/fold_0/checkpoint_final.pth",
+            "license_sha256": "{project_root}/models/nnInteractive/nnInteractive_v1.0/LICENSE",
+            "environment_freeze_sha256": "{project_root}/envs/nninteractive_v1.freeze.txt",
+            "source_license_sha256": "{project_root}/external_runners/nninteractive/source/LICENSE"
+          }
+        },
+        "notes": "PETCT-NNINTERACTIVE-ENV-v1.1 passed on the A6000 with the pinned checkpoint, source bundle, licenses, environment freeze, adapter and config hashes bound. The smoke loaded and warmed the real model and exercised synthetic initial-M0 plus scribble APIs without producing a scientific prediction. Scientific execution remains hard-gated on frozen OOF/comparator manifests, and every future result must retain the exposed-pretraining label. The orchestration launcher emits a POSITIVE_ONLY_DIAGNOSTIC union_with_m0 table and a separate native_full_mask diagnostic; neither is a bidirectional baseline."
+      }
+    },
+    {
+      "id": "segvol",
+      "role": "REFERENCE_ONLY",
+      "admission_state": "NOT_APPLICABLE",
+      "selection": "REFERENCE_ONLY_DO_NOT_RUN",
+      "display_name": "SegVol",
+      "category": "clip_semantic_token_3d_ct_reference",
+      "evidence_status": "LOCAL_PAPER_AND_PINNED_SOURCE_PAIR_PRESENT_REFERENCE_ONLY_NO_PROJECT_RESULT",
+      "source": {
+        "repository": "https://github.com/BAAI-DCAI/SegVol",
+        "pinned_commit": "5768c9795794a327a2629ce7f137ab03d5ea8378",
+        "local_source_snapshot": "<local-workspace>/Honor codes/Medical_SAM_baseline/SegVol",
+        "local_paper": "<local-workspace>/Thesis/3D promptable baselines/2023_SegVol_Universal_and_Interactive_Volumetric_Medical_Image_Segmentation.pdf"
+      },
+      "prompt_modalities": ["category_text", "point", "box"],
+      "spatial_dimensionality": "3D",
+      "state_interface": "SegVol uses frozen CLIP category-text embeddings and SAM-style spatial prompts for volumetric CT segmentation. It has no patient-excluded M0 residual-update contract and is not a PET comparator.",
+      "pretraining": {
+        "kind": "large-scale CT image pretraining plus supervised CT segmentation with a frozen CLIP text encoder",
+        "current_psma_v3_exposure": "UNVERIFIED",
+        "local_checkpoint_availability": "NOT_RELEVANT_REFERENCE_ONLY",
+        "leakage_policy": "Do not infer PET/PSMA applicability from CT semantic prompting; no execution or quantitative row is admitted."
+      },
+      "headline": {
+        "eligible": false,
+        "reason": "Reference-only CLIP semantic-token precedent; it is neither an M0 bidirectional residual editor nor a PET/CT comparator and has no matched current-task contract."
+      },
+      "contracts": {
+        "input_manifest": "PETCT-EXTERNAL-COMPARATOR-INPUT-v1.0",
+        "output_manifest": "PETCT-EXTERNAL-COMPARATOR-OUTPUT-v1.0",
+        "metrics": "PETCT-EXTERNAL-COMPARATOR-METRICS-v1.0"
+      },
+      "input_adapter": {
+        "consumes": [],
+        "prompt_translation": "None. SegVol is not adapted into the current experiment matrix.",
+        "m0_role": "No M0 role; do not create one by relabelling category text as state-relative intent."
+      },
+      "output_adapter": {
+        "prediction_semantics": "full_mask",
+        "required_action": "None; reference-only and no project output is permitted."
+      },
+      "metric_set": ["dice", "dice_delta_vs_m0", "dmm", "false_positive_volume_ml", "false_negative_volume_ml", "authorized_residual_recall", "prompt_distal_recall", "unauthorized_addition_volume_ml", "m0_preservation_rate", "other_lesion_harm", "unintended_bridge_or_merge_rate", "runtime_seconds", "peak_gpu_memory_mib"],
+      "execution": {
+        "state": "NOT_WIRED",
+        "argv": [],
+        "cwd": null,
+        "network_policy": "NO_DOWNLOADS",
+        "notes": "Do not upload or run SegVol, its CLIP checkpoint, or model weights. This entry records a paper-source reference only."
+      }
+    }
+  ]
+}
