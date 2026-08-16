@@ -36,6 +36,24 @@ REQUIRED_METHODS = {
 }
 
 
+def _source_license_or_skip(
+    source_id: str,
+    configured_path: Path,
+    minimal_runtime_path: Path | None,
+) -> Path:
+    for candidate in (configured_path, minimal_runtime_path):
+        if candidate is not None and candidate.parent.is_dir():
+            assert candidate.is_file(), (
+                f"{source_id} source bundle is present but its license is missing: "
+                f"{candidate}"
+            )
+            return candidate
+    pytest.skip(
+        f"requires the pinned {source_id} source checkout or minimal runtime "
+        "license; neither vendor asset directory is present"
+    )
+
+
 def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -148,12 +166,12 @@ def test_selected_source_licenses_are_machine_readable_and_distinct_from_checkpo
         assert source["license"] == "Apache-2.0"
         assert source["license_sha256"] == expected_sha256
         license_path = PROJECT / source["license_file"]
-        if not license_path.is_file() and minimal_runtime_license is not None:
-            license_path = minimal_runtime_license
         if source_id == "scribbleprompt" and not license_path.is_file():
             assert methods["scribbleprompt"]["admission_state"] == "BLOCKED_CHECKPOINT_LICENSE"
             continue
-        assert license_path.is_file()
+        license_path = _source_license_or_skip(
+            source_id, license_path, minimal_runtime_license
+        )
         assert hashlib.sha256(license_path.read_bytes()).hexdigest() == expected_sha256
 
     scribbleprompt = methods["scribbleprompt"]
@@ -179,15 +197,23 @@ def test_conditioning_module_references_bind_exact_papers_sources_and_limits() -
     }
     assert references.keys() == {"film", "lvit"}
 
-    local_reference_workspace = (PROJECT / "upstream" / "FiLM").is_dir()
+    source_licenses = [
+        PROJECT / reference["source"]["license_file"]
+        for reference in references.values()
+    ]
+    missing_source_bundles = [
+        path.parent for path in source_licenses if not path.parent.is_dir()
+    ]
+    if missing_source_bundles:
+        pytest.skip(
+            "requires the pinned FiLM and LViT source-license bundles for "
+            "paper/source hash verification; absent directories: "
+            + ", ".join(str(path) for path in missing_source_bundles)
+        )
     for reference in references.values():
         assert reference["server_artifact_required"] is False
         paper_path = (PROJECT / reference["paper"]["path"]).resolve()
         source_license = PROJECT / reference["source"]["license_file"]
-        if not local_reference_workspace:
-            assert not paper_path.exists()
-            assert not source_license.exists()
-            continue
         assert paper_path.is_file()
         assert source_license.is_file()
         assert hashlib.sha256(paper_path.read_bytes()).hexdigest() == reference["paper"]["sha256"]

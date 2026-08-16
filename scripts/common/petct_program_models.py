@@ -38,7 +38,7 @@ from common.petct_program_contract import (
 PROGRAM_EDITOR_ARCHITECTURE_ID = "matched_legal_component_program_editor_v1"
 COMPONENT_DESCRIPTOR_DIM = 7
 # Descriptor order consumed by this module:
-# [log_volume, z_span, bbox_dz, centroid_dx_mm, centroid_dy_mm,
+# [log_volume, z_span, prompted_slice_overlap, centroid_dx_mm, centroid_dy_mm,
 #  cue_overlap_voxels, distance_from_cue_mm]
 NULL_FAMILY_ID = -1
 
@@ -51,9 +51,24 @@ def _normalized_pointer_features(component_vectors: Tensor) -> Tensor:
         dtype=component_vectors.dtype,
         device=component_vectors.device,
     )
-    clamped = torch.minimum(
-        torch.maximum(component_vectors, torch.zeros_like(component_vectors)),
-        scale * 2.0,
+    if not torch.isfinite(component_vectors).all():
+        raise ProgramContractError("component descriptors must be finite")
+    # Centroid offsets are signed.  Clipping every field at zero destroyed
+    # left/right and anterior/posterior information and made two different
+    # candidates observationally identical to the pointer.
+    clamped = component_vectors.clone()
+    nonnegative = (0, 1, 2, 5, 6)
+    signed = (3, 4)
+    positive_values = torch.maximum(
+        clamped[..., list(nonnegative)],
+        torch.zeros_like(clamped[..., list(nonnegative)]),
+    )
+    clamped[..., list(nonnegative)] = torch.minimum(
+        positive_values, scale[list(nonnegative)] * 2.0
+    )
+    signed_limit = scale[list(signed)] * 2.0
+    clamped[..., list(signed)] = torch.minimum(
+        torch.maximum(clamped[..., list(signed)], -signed_limit), signed_limit
     )
     return clamped / scale.clamp_min(1.0)
 
@@ -224,10 +239,15 @@ class LegalCallCompiler(nn.Module):
         family_logits: Tensor,
         pointer_probs: Optional[Tensor],
         components: List[Mapping],
+        cue_hit_component_position: Optional[int] = None,
     ) -> Dict[str, object]:
         """Compile one episode. ``family_logits`` is [3]; pointer optional."""
 
         legal = family_ids(operation, self.include_repair)
+        if family_logits.ndim != 1 or family_logits.numel() != len(legal):
+            raise ProgramContractError(
+                "family logits must contain exactly the legal operation-conditioned families"
+            )
         family_id = int(family_logits.argmax().item())
         family = legal[family_id]
         trace: List[Dict[str, object]] = [
@@ -238,6 +258,10 @@ class LegalCallCompiler(nn.Module):
         if operation == "ADD" and family != "CREATE_NEW":
             if pointer_probs is None:
                 raise ProgramContractError("ADD existing-object family requires pointer posterior")
+            if len(components) == 0:
+                raise ProgramContractError("ADD existing-object call has no component candidates")
+            if pointer_probs.ndim != 1 or pointer_probs.numel() != len(components):
+                raise ProgramContractError("pointer posterior and candidates disagree")
             operand_index = int(pointer_probs.argmax().item())
             operand = str(components[operand_index]["component_key"])
             trace.append(
@@ -252,12 +276,19 @@ class LegalCallCompiler(nn.Module):
             operand = NEW_CUE_SENTINEL
             trace.append({"step": "BIND", "binding": "NEW_CUE_sentinel"})
         else:
-            operand = str(components[0]["component_key"])
+            if cue_hit_component_position is None:
+                raise ProgramContractError(
+                    "REMOVE requires the deterministic cue-hit component position"
+                )
+            operand_index = int(cue_hit_component_position)
+            if not 0 <= operand_index < len(components):
+                raise ProgramContractError("cue-hit component position is outside candidates")
+            operand = str(components[operand_index]["component_key"])
             trace.append(
                 {
                     "step": "BIND",
                     "binding": "deterministic_cue_hit",
-                    "operand_index": 0,
+                    "operand_index": operand_index,
                 }
             )
         validate_legal_call(operation, family, operand)
@@ -300,7 +331,14 @@ class ProgramEmbedding(nn.Module):
         support_mode: Tensor,
     ) -> Tensor:
         null_mask = family_ids_t == NULL_FAMILY_ID
-        safe_family = torch.where(null_mask, torch.zeros_like(family_ids_t), family_ids_t)
+        if torch.any((~null_mask) & ((family_ids_t < 0) | (family_ids_t >= self.family.num_embeddings - 1))):
+            raise ProgramContractError("global family id is outside the embedding vocabulary")
+        # Row zero is reserved exclusively for NULL.  Legal global family
+        # ids 0..5 are shifted by one so GROW_LOCAL is trainable rather than
+        # silently mapped to the frozen padding vector.
+        safe_family = torch.where(
+            null_mask, torch.zeros_like(family_ids_t), family_ids_t + 1
+        )
         joined = torch.cat(
             [
                 self.family(safe_family),
@@ -330,7 +368,11 @@ class ContinuousReadoutConditioner(nn.Module):
 
     def forward(self, state_embedding: Tensor, active_mask: Tensor) -> Tensor:
         projected = self.readout(state_embedding)
-        return torch.where(active_mask[:, None], projected, torch.zeros_like(projected))
+        return torch.where(
+            active_mask.to(dtype=torch.bool)[:, None],
+            projected,
+            torch.zeros_like(projected),
+        )
 
 
 class ProgramEditorUNet2D(nn.Module):
@@ -389,6 +431,7 @@ class ProgramEditorUNet2D(nn.Module):
         else:
             if state_embedding is None or active_mask is None:
                 raise ValueError("continuous conditioner requires state embedding and mask")
+            active_mask = active_mask.to(dtype=torch.bool)
             condition = self.condition(state_embedding, active_mask)
             neutral_mask = ~active_mask
         e1 = self.enc1(visual)
@@ -432,8 +475,6 @@ class ProgramEditorUNet2D(nn.Module):
         current = m0_center > 0
         prediction = torch.sigmoid(logits) >= float(threshold)
         add_rows = operation_ids == 0
-        if bool(torch.any(add_rows & selected_component.bool().flatten(1).any(dim=1)).item()):
-            raise ProgramContractError("ADD episodes must carry an all-zero selected channel")
         delta = torch.where(
             add_rows[:, None, None, None],
             prediction & ~current,

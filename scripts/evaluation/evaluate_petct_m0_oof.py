@@ -257,7 +257,6 @@ def evaluate_m0_oof(
     empty_evaluator = metric_class(
         overlap_threshold=overlap_threshold, connectivity=connectivity
     )
-    run_dir = Path(str(validated.get("run_dir") or "")).resolve()
     output_rows: list[dict[str, Any]] = []
     for case_id in sorted(source):
         partition = str(case_to_partition[case_id])

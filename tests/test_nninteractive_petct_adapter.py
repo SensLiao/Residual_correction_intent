@@ -30,6 +30,39 @@ MODEL_INFO = {
 }
 
 
+def _require_real_model_bundle() -> None:
+    if not MODEL_FOLDER.is_dir():
+        pytest.skip(
+            "requires the local nnInteractive v1.0 checkpoint/license bundle; "
+            f"model directory is absent: {MODEL_FOLDER}"
+        )
+
+
+def _official_session_source_or_skip() -> Path:
+    candidates = (
+        (
+            PROJECT / "upstream" / "nnInteractive",
+            Path("nnInteractive/inference/inference_session.py"),
+        ),
+        (
+            PROJECT / "external_runners" / "nninteractive" / "source",
+            Path("nnInteractive/inference/inference_session.py"),
+        ),
+    )
+    for root, relative in candidates:
+        if root.is_dir():
+            source = root / relative
+            assert source.is_file(), (
+                "nnInteractive source bundle is present but incomplete: "
+                f"missing {source}"
+            )
+            return source
+    pytest.skip(
+        "requires the pinned nnInteractive upstream checkout or minimal source "
+        "bundle; neither vendor asset directory is present"
+    )
+
+
 class FakeSession:
     supports_initial_label = True
     supported_interactions = {"scribble": True}
@@ -177,6 +210,7 @@ def _options(
 
 
 def test_real_v1_checkpoint_and_license_match_frozen_hashes() -> None:
+    _require_real_model_bundle()
     info = adapter.validate_model_folder(MODEL_FOLDER, CONFIG)
     assert info["checkpoint_sha256"] == adapter.CHECKPOINT_SHA256
     assert info["checkpoint_bytes"] == 411387150
@@ -186,25 +220,7 @@ def test_real_v1_checkpoint_and_license_match_frozen_hashes() -> None:
 
 
 def test_pinned_official_source_exposes_the_expected_native_session_api() -> None:
-    source_path = (
-        PROJECT
-        / "upstream"
-        / "nnInteractive"
-        / "nnInteractive"
-        / "inference"
-        / "inference_session.py"
-    )
-    if not source_path.is_file():
-        source_path = (
-            PROJECT
-            / "external_runners"
-            / "nninteractive"
-            / "source"
-            / "nnInteractive"
-            / "inference"
-            / "inference_session.py"
-        )
-    assert source_path.is_file()
+    source_path = _official_session_source_or_skip()
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
     session_class = next(
         node

@@ -1,37 +1,20 @@
 #!/usr/bin/env python3
-"""Evaluate v3 compiler predictions and editor corrections (SCEP metrics).
+"""Offline v3 compiler/editor evaluation with complete-denominator accounting.
 
-Every metric row carries an explicit ``denominator_domain``:
-  * ``2d_prompted_plane`` — metrics on the prompted axial slice (2D in-plane
-    voxel denominators);
-  * ``3d_full_volume``  — full-volume metrics (3D voxel denominators,
-    requires --volume-root and --candidates for the selected component);
-  * ``protocol_constant`` — ratios such as single_slice_ceiling that are
-    protocol constants, never oracle Dice ceilings.
-
-2D and 3D denominators are never mixed into one number.
-
-Inputs:
-  * --predictions: compiler inference artifact (jsonl), one legal call (or
-    ABSTAIN) per episode_id;
-  * --episodes: episodes manifest with partition/goal/operation/
-    matched_state_group_id/visible_npz/evaluation_npz references;
-  * --editor-predictions: jsonl mapping episode_id -> delta npz path (2D
-    prompted-slice delta) and optionally -> volume delta path;
-  * --candidates: visible component-candidate sidecar directory (for the
-    selected-component 2D mask and 3D component joins);
-  * --volume-root: controlled-state root for 3D joins
-    (<volume-root>/<group>/<goal>/{m0,authorized,gt}.nii.gz, as materialized
-    by the builder).  Without it, 3D metrics are reported absent.
+Compiler inference must finish first and publish an immutable prediction
+receipt. This evaluator then opens the physically separate label/audit
+lanes. Missing, abstained, malformed, and illegal calls remain in the full
+expected denominator and count as classification errors.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
+import os
 import sys
 from pathlib import Path
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -41,303 +24,494 @@ if str(SCRIPTS_ROOT) not in sys.path:
 
 from common.petct_program_contract import (  # noqa: E402
     NEW_CUE_SENTINEL,
-    family_ids,
+    family_to_id,
     goal_to_family_id,
+    protected_refs_policy,
+    render_goal,
+    validate_legal_call,
+)
+from common.petct_program_learning import (  # noqa: E402
+    LearningContractError,
+    _sha256_file,
+    load_jsonl,
+    load_label_manifest,
 )
 
+EVAL_SCHEMA = "PETCT-PROGRAM-EVAL-v1.1"
+ERROR_SENTINEL = -1
 
-def _load_jsonl(path: Path):
+
+def _unique_by_episode(rows: Sequence[Mapping[str, Any]], role: str) -> dict[str, dict]:
+    result: dict[str, dict] = {}
+    for row in rows:
+        episode_id = str(row.get("episode_id") or "")
+        if not episode_id or episode_id in result:
+            raise LearningContractError("%s has missing/duplicate episode_id" % role)
+        result[episode_id] = dict(row)
+    return result
+
+
+def _load_json(path: Path) -> dict:
     if not path.is_file():
-        raise FileNotFoundError(path)
-    rows = []
-    with path.open(encoding="utf-8") as stream:
-        for line in stream:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
+        raise LearningContractError("missing JSON artifact: %s" % path)
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _tree_records(directory: Path) -> dict[str, dict]:
+    if not directory.is_dir():
+        raise LearningContractError("missing sidecar directory: %s" % directory)
+    return _unique_by_episode(
+        [_load_json(path) for path in sorted(directory.glob("*.json"))], str(directory)
+    )
 
 
-def _load_nifti_binary(path: Path) -> np.ndarray:
-    import nibabel as nib
-
+def _load_nifti_binary(path: Path, expected_sha256: str | None = None) -> np.ndarray:
+    if expected_sha256 is not None and _sha256_file(path) != expected_sha256:
+        raise LearningContractError("3D evaluation mask hash mismatch: %s" % path)
+    try:
+        import nibabel as nib
+    except ImportError:
+        raise RuntimeError("nibabel is required for 3D editor evaluation") from None
     array = np.asarray(nib.load(str(path)).dataobj)
     if array.ndim != 3:
-        raise ValueError("mask must be 3D: %s" % path)
+        raise LearningContractError("mask must be 3D: %s" % path)
     return (array > 0).astype(np.uint8)
 
 
-def _dice(binary_a: np.ndarray, binary_b: np.ndarray) -> float:
+def _dice(binary_a: np.ndarray, binary_b: np.ndarray) -> float | None:
     intersection = float(np.logical_and(binary_a, binary_b).sum())
     total = float(binary_a.sum()) + float(binary_b.sum())
-    return 2.0 * intersection / total if total else float("nan")
+    return 2.0 * intersection / total if total else None
 
 
 def _patient_balanced_macro_f1(true_ids, pred_ids, patients, classes):
-    per_patient = {}
-    for true_id, pred_id, patient in zip(true_ids, pred_ids, patients):
-        slot = per_patient.setdefault(str(patient), {"tp": {}, "fp": {}, "fn": {}})
-        if true_id == pred_id:
-            slot["tp"][true_id] = slot["tp"].get(true_id, 0) + 1
-        else:
-            slot["fp"][pred_id] = slot["fp"].get(pred_id, 0) + 1
-            slot["fn"][true_id] = slot["fn"].get(true_id, 0) + 1
-    per_class = []
+    """D14 estimand allowing ERROR_SENTINEL predictions in the denominator."""
+
+    if not (len(true_ids) == len(pred_ids) == len(patients)) or not true_ids:
+        raise LearningContractError("metric vectors must be non-empty and aligned")
+    grouped: dict[str, list[int]] = {}
+    for index, patient in enumerate(patients):
+        grouped.setdefault(str(patient), []).append(index)
+    per_class_f1: dict[str, float | None] = {}
+    per_class_support: dict[str, int] = {}
+    class_scores = []
     for class_id in classes:
-        f1s = []
-        for slot in per_patient.values():
-            tp = slot["tp"].get(class_id, 0)
-            fp = slot["fp"].get(class_id, 0)
-            fn = slot["fn"].get(class_id, 0)
-            denom = 2 * tp + fp + fn
-            f1s.append(2 * tp / denom if denom else 1.0)
-        per_class.append(float(np.mean(f1s)))
-    return float(np.mean(per_class))
-
-
-def _compiler_metrics(predictions, rows):
-    pred_by_episode = {str(p["episode_id"]): p for p in predictions}
-    val_rows = [row for row in rows if row.get("partition") == "val"]
-    true_ids, pred_ids, patients = [], [], []
-    legal_count = 0
-    pointer_recalls = []
-    pointer_rows = 0
-    for row in val_rows:
-        episode_id = str(row["episode_id"])
-        prediction = pred_by_episode.get(episode_id)
-        if prediction is None:
-            continue
-        operation = str(row["operation"])
-        gold_family = goal_to_family_id(str(row["goal"]), operation)
-        family = str(prediction.get("family") or "")
-        legal_families = family_ids(operation, include_repair=True)
-        if family in legal_families:
-            legal_count += 1
-            pred_id = legal_families.index(family)
-        else:
-            pred_id = -1
-        true_ids.append(gold_family)
-        pred_ids.append(pred_id)
-        patients.append(str(row.get("patient_id") or row.get("source_patient_id")))
-        if operation == "ADD" and str(row["goal"]) != "ADD_NEW_COMPLETE":
-            pointer_rows += 1
-            target_sets = row.get("pointer_targets") or []
-            predicted_index = prediction.get("pointer_index")
-            if target_sets and predicted_index is not None:
-                pointer_recalls.append(
-                    1.0 if int(predicted_index) in [int(t) for t in target_sets] else 0.0
-                )
-    covered = [index for index, value in enumerate(pred_ids) if value >= 0]
-    macro_f1 = (
-        _patient_balanced_macro_f1(
-            [true_ids[i] for i in covered],
-            [pred_ids[i] for i in covered],
-            [patients[i] for i in covered],
-            [0, 1, 2],
-        )
-        if covered
-        else float("nan")
-    )
-    pairs = 0
-    consistent = 0
-    by_group = {}
-    for row in val_rows:
-        episode_id = str(row["episode_id"])
-        if episode_id not in pred_by_episode:
-            continue
-        by_group.setdefault(str(row.get("matched_state_group_id") or ""), []).append(
-            (episode_id, row)
-        )
-    for group_rows in by_group.values():
-        for a in range(len(group_rows)):
-            for b in range(a + 1, len(group_rows)):
-                episode_a, row_a = group_rows[a]
-                episode_b, row_b = group_rows[b]
-                if row_a["operation"] != row_b["operation"]:
-                    continue
-                family_a = str(pred_by_episode[episode_a].get("family") or "")
-                family_b = str(pred_by_episode[episode_b].get("family") or "")
-                legal = family_ids(str(row_a["operation"]), include_repair=True)
-                if family_a not in legal or family_b not in legal:
-                    continue
-                pairs += 1
-                gold_a = goal_to_family_id(str(row_a["goal"]), str(row_a["operation"]))
-                gold_b = goal_to_family_id(str(row_b["goal"]), str(row_b["operation"]))
-                if gold_a != gold_b and family_a != family_b:
-                    consistent += 1
+        scores = []
+        for indices in grouped.values():
+            tp = sum(true_ids[i] == class_id and pred_ids[i] == class_id for i in indices)
+            fp = sum(true_ids[i] != class_id and pred_ids[i] == class_id for i in indices)
+            fn = sum(true_ids[i] == class_id and pred_ids[i] != class_id for i in indices)
+            denominator = 2 * tp + fp + fn
+            if denominator:
+                scores.append(2.0 * tp / denominator)
+        key = str(class_id)
+        per_class_support[key] = len(scores)
+        per_class_f1[key] = float(np.mean(scores)) if scores else None
+        if scores:
+            class_scores.append(float(np.mean(scores)))
+    if not class_scores:
+        raise LearningContractError("no defined patient/class F1 cells")
     return {
-        "patient_balanced_family_macro_f1": macro_f1,
-        "legal_call_rate": legal_count / max(1, len(true_ids)),
-        "matched_pair_count": pairs,
-        "matched_pair_consistency": (consistent / pairs) if pairs else float("nan"),
-        "pointer_recall_at_1": (
-            float(np.mean(pointer_recalls)) if pointer_recalls else float("nan")
-        ),
-        "pointer_episodes": pointer_rows,
-        "val_episodes_covered": len(covered),
-        "val_episodes_total": len(true_ids),
+        "estimate": float(np.mean(class_scores)),
+        "per_class_f1": per_class_f1,
+        "per_class_support": per_class_support,
+        "patient_count": len(grouped),
+        "defined_class_count": len(class_scores),
     }
 
 
-def _selected_2d_mask(candidates_dir: Path, episode_id: str, pointer_index):
-    candidate_path = candidates_dir / ("%s.json" % episode_id)
-    if not candidate_path.is_file():
-        raise FileNotFoundError("missing candidates record: %s" % candidate_path)
-    with candidate_path.open(encoding="utf-8") as stream:
-        record = json.load(stream)
-    if pointer_index is None:
-        raise ValueError("pointer_index required for selected component")
-    component = record["components"][int(pointer_index)]
-    return np.asarray(component["prompted_slice_mask"], dtype=np.uint8)
+def _schema_validator(schema: Mapping[str, Any]):
+    try:
+        import jsonschema
+    except ImportError:
+        raise RuntimeError("jsonschema is required for program evaluation") from None
+    return jsonschema.Draft202012Validator(schema)
 
 
-def _editor_metrics_2d(row, delta):
-    """2D prompted-plane editor metrics with 2D denominators."""
+def _prediction_family_id(prediction, label, candidate, validator) -> tuple[int, str]:
+    if prediction is None:
+        return ERROR_SENTINEL, "missing"
+    if not validator.is_valid(prediction):
+        return ERROR_SENTINEL, "schema_invalid"
+    if prediction.get("decision") == "ABSTAIN":
+        return ERROR_SENTINEL, "abstain"
+    operation = str(label["operation"])
+    if str(prediction.get("operation")) != operation:
+        return ERROR_SENTINEL, "operation_changed"
+    family = str(prediction.get("family") or "")
+    operand = str(prediction.get("operand") or "")
+    try:
+        validate_legal_call(operation, family, operand)
+    except Exception:
+        return ERROR_SENTINEL, "illegal_call"
+    if str(prediction.get("goal")) != render_goal(operation, family):
+        return ERROR_SENTINEL, "inconsistent_goal"
+    if dict(prediction.get("protected_refs") or {}) != dict(
+        protected_refs_policy(operation, operand)
+    ):
+        return ERROR_SENTINEL, "inconsistent_protection"
+    components = candidate.get("components", [])
+    keys = [str(component.get("component_key") or "") for component in components]
+    if operand != NEW_CUE_SENTINEL and operand not in keys:
+        return ERROR_SENTINEL, "unknown_operand"
+    if operation == "REMOVE":
+        hit = candidate.get("cue_hit_component_position")
+        if hit is None or not 0 <= int(hit) < len(keys) or operand != keys[int(hit)]:
+            return ERROR_SENTINEL, "remove_operand_not_cue_hit"
+    return family_to_id(family), "legal"
 
-    with np.load(row["evaluation_npz"], allow_pickle=False) as bundle:
-        target = np.asarray(bundle["target"], dtype=np.float32) > 0
+
+def _compiler_metrics(
+    predictions,
+    rows,
+    candidates: Mapping[str, Mapping[str, Any]],
+    pointer_targets: Mapping[str, Mapping[str, Any]],
+    validator,
+    *,
+    partition: str = "val",
+):
+    pred_by_episode = _unique_by_episode(predictions, "predictions")
+    expected = [row for row in rows if row.get("partition") == partition]
+    if not expected:
+        raise LearningContractError("evaluation partition is empty")
+    expected_ids = {str(row["episode_id"]) for row in expected}
+    if set(pred_by_episode) - expected_ids:
+        raise LearningContractError("predictions contain unexpected episodes")
+    true_ids, pred_ids, patients = [], [], []
+    statuses: dict[str, int] = {}
+    pointer_scores = []
+    group_rows: dict[str, list[tuple[int, int]]] = {}
+    for row in expected:
+        episode_id = str(row["episode_id"])
+        if episode_id not in candidates:
+            raise LearningContractError("missing candidates for expected episode")
+        gold_id = goal_to_family_id(str(row["goal"]))
+        predicted_id, status = _prediction_family_id(
+            pred_by_episode.get(episode_id), row, candidates[episode_id], validator
+        )
+        statuses[status] = statuses.get(status, 0) + 1
+        true_ids.append(gold_id)
+        pred_ids.append(predicted_id)
+        patients.append(str(row["patient_id"]))
+        group_key = "%s|%s" % (row["matched_state_group_id"], row["operation"])
+        group_rows.setdefault(group_key, []).append((gold_id, predicted_id))
+        if row["operation"] == "ADD" and row["goal"] != "ADD_NEW_COMPLETE":
+            target = pointer_targets.get(episode_id)
+            if target is None:
+                raise LearningContractError("missing pointer target for ADD existing episode")
+            prediction = pred_by_episode.get(episode_id)
+            operand = str(prediction.get("operand") or "") if prediction else ""
+            target_keys = {str(value) for value in target["pointer_target_component_keys"]}
+            pointer_scores.append(
+                1.0 if status == "legal" and operand in target_keys else 0.0
+            )
+    metric = _patient_balanced_macro_f1(true_ids, pred_ids, patients, list(range(6)))
+    pair_total = pair_correct = triplet_total = triplet_correct = 0
+    for values in group_rows.values():
+        if len(values) != 3 or len({truth for truth, _ in values}) != 3:
+            raise LearningContractError("matched same-operation group is not a three-family set")
+        triplet_total += 1
+        triplet_correct += int(all(truth == prediction for truth, prediction in values))
+        for left in range(3):
+            for right in range(left + 1, 3):
+                pair_total += 1
+                pair_correct += int(
+                    values[left][0] == values[left][1]
+                    and values[right][0] == values[right][1]
+                )
+    total = len(expected)
+    return {
+        "patient_balanced_family_macro_f1": metric["estimate"],
+        "per_family_f1": metric["per_class_f1"],
+        "per_family_patient_support": metric["per_class_support"],
+        "patient_count": metric["patient_count"],
+        "legal_call_rate": statuses.get("legal", 0) / total,
+        "prediction_coverage_rate": (total - statuses.get("missing", 0)) / total,
+        "status_counts": statuses,
+        "expected_episodes": total,
+        "matched_pair_joint_accuracy": pair_correct / pair_total if pair_total else None,
+        "matched_pair_count": pair_total,
+        "matched_triplet_exact_accuracy": triplet_correct / triplet_total if triplet_total else None,
+        "matched_triplet_count": triplet_total,
+        "pointer_recall_at_1": float(np.mean(pointer_scores)) if pointer_scores else None,
+        "pointer_episodes": len(pointer_scores),
+    }
+
+
+def _editor_metrics_2d(label, visible, delta):
+    with np.load(label["evaluation_npz"], allow_pickle=False) as bundle:
+        if set(bundle.files) != {"target", "authorized", "gt"}:
+            raise LearningContractError("evaluation tensor schema mismatch")
         gt = np.asarray(bundle["gt"], dtype=np.float32) > 0
         authorized = np.asarray(bundle["authorized"], dtype=np.float32) > 0
-    with np.load(row["visible_npz"], allow_pickle=False) as bundle:
+    with np.load(visible["visible_npz"], allow_pickle=False) as bundle:
         m0 = np.asarray(bundle["m0"], dtype=np.float32) > 0
-    operation = str(row["operation"])
-    delta = delta > 0
-    if operation == "ADD":
-        corrected = m0 | delta
-    else:
-        corrected = m0 & ~delta
-    dice_before = _dice(m0, gt)
-    dice_after = _dice(corrected, gt)
-    recovery = float(np.logical_and(delta, authorized).sum()) / max(
-        1.0, float(authorized.sum())
-    )
-    nonselected_harm = float(np.logical_and(delta, ~(authorized | m0)).sum()) / max(
-        1.0, float(delta.sum())
-    ) if delta.sum() else 0.0
+    delta = np.asarray(delta) > 0
+    if delta.shape != m0.shape or gt.shape != m0.shape or authorized.shape != m0.shape:
+        raise LearningContractError("2D editor arrays have inconsistent geometry")
+    corrected = (m0 | delta) if label["operation"] == "ADD" else (m0 & ~delta)
+    before, after = _dice(m0, gt), _dice(corrected, gt)
+    unauthorized = np.logical_and(delta, ~authorized)
     return {
         "denominator_domain": "2d_prompted_plane",
-        "dice_before": dice_before,
-        "dice_after": dice_after,
-        "delta_dice": dice_after - dice_before,
-        "target_recovery": recovery,
-        "nonselected_harm_2d": nonselected_harm,
-    }
-
-
-def _editor_metrics_3d(row, volume_delta_path: str):
-    """3D full-volume editor metrics with 3D denominators."""
-
-    group = str(row["matched_state_group_id"])
-    goal = str(row["goal"])
-    volume_root = Path(str(row["_volume_root"]))
-    m0 = _load_nifti_binary(volume_root / group / goal / "m0.nii.gz")
-    authorized = _load_nifti_binary(volume_root / group / goal / "authorized.nii.gz")
-    gt = _load_nifti_binary(volume_root / group / goal / "gt.nii.gz")
-    delta = _load_nifti_binary(Path(volume_delta_path))
-    operation = str(row["operation"])
-    corrected = (m0 | delta) if operation == "ADD" else (m0 & ~delta)
-    dice_before = _dice(m0, gt)
-    dice_after = _dice(corrected, gt)
-    recovery = float(np.logical_and(delta, authorized).sum()) / max(
-        1.0, float(authorized.sum())
-    )
-    return {
-        "denominator_domain": "3d_full_volume",
-        "dice_before": dice_before,
-        "dice_after": dice_after,
-        "delta_dice": dice_after - dice_before,
-        "target_recovery_3d": recovery,
-    }
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--predictions", type=Path, required=True)
-    parser.add_argument("--episodes", type=Path, required=True)
-    parser.add_argument("--editor-predictions", type=Path, default=None)
-    parser.add_argument("--candidates", type=Path, default=None)
-    parser.add_argument("--volume-root", type=Path, default=None)
-    parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
-    if args.output.exists():
-        parser.error("output already exists")
-    predictions = _load_jsonl(args.predictions)
-    rows = _load_jsonl(args.episodes)
-    compiler = _compiler_metrics(predictions, rows)
-    editor_2d_rows = []
-    editor_3d_rows = []
-    if args.editor_predictions:
-        editor_map = {
-            str(entry["episode_id"]): entry for entry in _load_jsonl(args.editor_predictions)
-        }
-        for row in rows:
-            if row.get("partition") != "val":
-                continue
-            episode_id = str(row["episode_id"])
-            entry = editor_map.get(episode_id)
-            if entry is None:
-                continue
-            delta_path = entry.get("delta_path")
-            if delta_path:
-                editor_2d_rows.append(
-                    {"episode_id": episode_id, **_editor_metrics_2d(row, np.asarray(np.load(delta_path)["delta"]))}
-                )
-            if args.volume_root and entry.get("volume_delta_path"):
-                row_copy = dict(row)
-                row_copy["_volume_root"] = str(args.volume_root)
-                editor_3d_rows.append(
-                    {
-                        "episode_id": episode_id,
-                        **_editor_metrics_3d(row_copy, str(entry["volume_delta_path"])),
-                    }
-                )
-    editor = {
-        "2d_prompted_plane": editor_2d_rows,
-        "3d_full_volume": editor_3d_rows,
-        "3d_status": "reported" if editor_3d_rows else (
-            "absent_without_volume_root" if not args.volume_root else "no_matching_predictions"
+        "dice_before": before,
+        "dice_after": after,
+        "delta_dice": None if before is None or after is None else after - before,
+        "target_recovery": (
+            float(np.logical_and(delta, authorized).sum()) / float(authorized.sum())
+            if authorized.sum() else None
+        ),
+        "unauthorized_edit_voxels": int(unauthorized.sum()),
+        "unauthorized_edit_fraction_of_delta": (
+            float(unauthorized.sum()) / float(delta.sum()) if delta.sum() else 0.0
         ),
     }
-    if editor_2d_rows:
-        editor["2d_summary"] = {
-            "mean_delta_dice_2d": float(
-                np.nanmean([row["delta_dice"] for row in editor_2d_rows])
-            ),
-            "mean_target_recovery_2d": float(
-                np.nanmean([row["target_recovery"] for row in editor_2d_rows])
-            ),
-            "episodes": len(editor_2d_rows),
-        }
-    if editor_3d_rows:
-        editor["3d_summary"] = {
-            "mean_delta_dice_3d": float(
-                np.nanmean([row["delta_dice"] for row in editor_3d_rows])
-            ),
-            "episodes": len(editor_3d_rows),
-        }
-    report = {
-        "schema_version": "PETCT-PROGRAM-EVAL-v1.0",
-        "denominator_domains": {
-            "2d_prompted_plane": "2D in-plane voxel denominators on the prompted axial slice",
-            "3d_full_volume": "3D voxel denominators over the full volume (separate rows; never averaged with 2D)",
-            "single_slice_ceiling": "protocol constant (authorized_operable_voxels / authorized_full_voxels); never an oracle Dice ceiling",
-        },
-        "compiler": compiler,
-        "editor": editor,
-        "predictions_sha256": _sha256_file(args.predictions),
-        "episodes_sha256": _sha256_file(args.episodes),
+
+
+def _editor_metrics_3d(label, audit, volume_delta_path: Path, volume_delta_sha256: str):
+    source = audit.get("source_record", {}).get("source_evaluation", {})
+    required = (
+        "m0_path", "m0_sha256", "authorized_path", "authorized_sha256",
+        "gt_path", "gt_sha256",
+    )
+    if not all(source.get(key) for key in required):
+        raise LearningContractError("audit lane lacks hash-bound 3D evaluation sources")
+    m0 = _load_nifti_binary(Path(source["m0_path"]), str(source["m0_sha256"]))
+    authorized = _load_nifti_binary(
+        Path(source["authorized_path"]), str(source["authorized_sha256"])
+    )
+    gt = _load_nifti_binary(Path(source["gt_path"]), str(source["gt_sha256"]))
+    delta = _load_nifti_binary(volume_delta_path, volume_delta_sha256)
+    if not (m0.shape == authorized.shape == gt.shape == delta.shape):
+        raise LearningContractError("3D editor arrays have inconsistent geometry")
+    corrected = (m0 | delta) if label["operation"] == "ADD" else (m0 & ~delta)
+    before, after = _dice(m0, gt), _dice(corrected, gt)
+    unauthorized = np.logical_and(delta, ~authorized)
+    return {
+        "denominator_domain": "3d_full_volume",
+        "dice_before": before,
+        "dice_after": after,
+        "delta_dice": None if before is None or after is None else after - before,
+        "target_recovery_3d": (
+            float(np.logical_and(delta, authorized).sum()) / float(authorized.sum())
+            if authorized.sum() else None
+        ),
+        "unauthorized_edit_voxels_3d": int(unauthorized.sum()),
     }
-    with args.output.open("x", encoding="utf-8") as stream:
-        json.dump(report, stream, indent=2, sort_keys=True)
-    print(json.dumps(report, indent=2, sort_keys=True))
+
+
+def _verify_prediction_receipt(receipt_path: Path, predictions_path: Path) -> dict:
+    receipt = _load_json(receipt_path)
+    if (
+        receipt.get("schema_version") != "PETCT-PROGRAM-PREDICTIONS-v1.0"
+        or receipt.get("status") != "PASS"
+        or receipt.get("label_lane_opened") is not False
+        or Path(str(receipt.get("predictions_path") or "")).resolve() != predictions_path.resolve()
+        or receipt.get("predictions_sha256") != _sha256_file(predictions_path)
+    ):
+        raise LearningContractError("prediction receipt is invalid or stale")
+    return receipt
+
+
+def _verify_editor_receipt(receipt_path: Path, manifest_path: Path) -> dict:
+    receipt = _load_json(receipt_path)
+    if (
+        receipt.get("schema_version") != "PETCT-PROGRAM-EDITOR-PREDICTIONS-v1.0"
+        or receipt.get("status") != "PASS"
+        or Path(str(receipt.get("output_manifest") or "")).resolve()
+        != manifest_path.resolve()
+        or receipt.get("output_manifest_sha256") != _sha256_file(manifest_path)
+        or receipt.get("program_source")
+        not in ("predicted_compiler", "gold_oracle_ceiling")
+    ):
+        raise LearningContractError("editor prediction receipt is invalid or stale")
+    expected_label_access = receipt["program_source"] == "gold_oracle_ceiling"
+    if receipt.get("label_lane_opened") is not expected_label_access:
+        raise LearningContractError("editor receipt misdeclares label-lane access")
+    return receipt
+
+
+def _evaluate_editor_manifest(manifest_path, expected, visible, audit):
+    editor_map = _unique_by_episode(load_jsonl(manifest_path), "editor predictions")
+    if set(editor_map) != set(expected):
+        raise LearningContractError("editor predictions require exact expected coverage")
+    rows_2d, rows_3d = [], []
+    for episode_id, label in expected.items():
+        if episode_id not in visible:
+            raise LearningContractError("visible manifest missing editor episode")
+        entry = editor_map[episode_id]
+        delta_path = Path(str(entry.get("delta_path") or ""))
+        if not delta_path.is_file() or entry.get("delta_sha256") != _sha256_file(delta_path):
+            raise LearningContractError("2D editor delta is missing or hash-stale")
+        with np.load(delta_path, allow_pickle=False) as delta_bundle:
+            if set(delta_bundle.files) != {"delta"}:
+                raise LearningContractError("editor delta NPZ schema mismatch")
+            delta = np.asarray(delta_bundle["delta"])
+        rows_2d.append(
+            {"episode_id": episode_id, **_editor_metrics_2d(label, visible[episode_id], delta)}
+        )
+        if entry.get("volume_delta_path") is not None:
+            if episode_id not in audit:
+                raise LearningContractError("3D delta requires the audit evaluation lane")
+            rows_3d.append({
+                "episode_id": episode_id,
+                **_editor_metrics_3d(
+                    label, audit[episode_id], Path(str(entry["volume_delta_path"])),
+                    str(entry.get("volume_delta_sha256") or ""),
+                ),
+            })
+
+    def mean_defined(rows, key):
+        values = [row[key] for row in rows if row.get(key) is not None]
+        return float(np.mean(values)) if values else None
+
+    return {
+        "2d_prompted_plane": rows_2d,
+        "3d_full_volume": rows_3d,
+        "2d_coverage": len(rows_2d) / len(expected) if expected else None,
+        "3d_coverage": len(rows_3d) / len(expected) if expected else None,
+        "mean_delta_dice_2d": mean_defined(rows_2d, "delta_dice"),
+        "mean_delta_dice_3d": mean_defined(rows_3d, "delta_dice"),
+    }
+
+
+def _paired_patient_gap(predicted, oracle, labels, *, seed: int, samples: int):
+    predicted_rows = {row["episode_id"]: row for row in predicted["2d_prompted_plane"]}
+    oracle_rows = {row["episode_id"]: row for row in oracle["2d_prompted_plane"]}
+    if set(predicted_rows) != set(oracle_rows):
+        raise LearningContractError("predicted/oracle editor coverage differs")
+    per_patient: dict[str, list[float]] = {}
+    for episode_id in predicted_rows:
+        left = predicted_rows[episode_id]["delta_dice"]
+        right = oracle_rows[episode_id]["delta_dice"]
+        if left is None or right is None:
+            continue
+        patient = str(labels[episode_id]["patient_id"])
+        per_patient.setdefault(patient, []).append(float(left) - float(right))
+    if not per_patient:
+        return None
+    patient_means = np.asarray(
+        [np.mean(per_patient[patient]) for patient in sorted(per_patient)], dtype=np.float64
+    )
+    rng = np.random.default_rng(seed)
+    draws = np.asarray([
+        np.mean(rng.choice(patient_means, size=len(patient_means), replace=True))
+        for _ in range(samples)
+    ])
+    return {
+        "estimand": "patient-balanced paired mean(predicted-call delta_Dice - gold-call delta_Dice)",
+        "estimate": float(patient_means.mean()),
+        "ci_low": float(np.quantile(draws, 0.025)),
+        "ci_high": float(np.quantile(draws, 0.975)),
+        "patient_count": len(patient_means),
+        "bootstrap_samples": samples,
+        "seed": seed,
+        "same_editor_checkpoint_required": True,
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--predictions", type=Path, required=True)
+    parser.add_argument("--prediction-receipt", type=Path, required=True)
+    parser.add_argument("--labels", type=Path, required=True)
+    parser.add_argument("--inference-manifest", type=Path, required=True)
+    parser.add_argument("--candidates", type=Path, required=True)
+    parser.add_argument("--pointer-targets", type=Path, required=True)
+    parser.add_argument("--editor-predictions", type=Path, default=None)
+    parser.add_argument("--editor-receipt", type=Path, default=None)
+    parser.add_argument("--oracle-editor-predictions", type=Path, default=None)
+    parser.add_argument("--oracle-editor-receipt", type=Path, default=None)
+    parser.add_argument("--audit-manifest", type=Path, default=None)
+    parser.add_argument("--partition", choices=("train", "val"), default="val")
+    parser.add_argument(
+        "--schema", type=Path,
+        default=SCRIPTS_ROOT.parent / "schemas" / "petct_program_v1.schema.json",
+    )
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--bootstrap-seed", type=int, default=20260816)
+    parser.add_argument("--bootstrap-samples", type=int, default=2000)
+    args = parser.parse_args(argv)
+    if args.output.exists() or args.output.is_symlink():
+        parser.error("output already exists")
+    prediction_receipt = _verify_prediction_receipt(args.prediction_receipt, args.predictions)
+    labels = load_label_manifest(args.labels)
+    label_rows = list(labels.values())
+    visible = _unique_by_episode(load_jsonl(args.inference_manifest), "inference manifest")
+    candidates = _tree_records(args.candidates)
+    pointer_targets = _tree_records(args.pointer_targets)
+    compiler = _compiler_metrics(
+        load_jsonl(args.predictions), label_rows, candidates, pointer_targets,
+        _schema_validator(_load_json(args.schema)), partition=args.partition,
+    )
+    expected = {
+        episode_id: label for episode_id, label in labels.items()
+        if label["partition"] == args.partition
+    }
+    if args.bootstrap_samples < 1:
+        parser.error("bootstrap samples must be positive")
+    audit = (
+        _unique_by_episode(load_jsonl(args.audit_manifest), "audit manifest")
+        if args.audit_manifest is not None else {}
+    )
+    editor = None
+    editor_receipt = None
+    if args.editor_predictions is not None:
+        if args.editor_receipt is None:
+            parser.error("--editor-predictions requires --editor-receipt")
+        editor_receipt = _verify_editor_receipt(args.editor_receipt, args.editor_predictions)
+        if editor_receipt["program_source"] != "predicted_compiler":
+            raise LearningContractError("primary editor artifact must use predicted calls")
+        editor = _evaluate_editor_manifest(args.editor_predictions, expected, visible, audit)
+    oracle_editor = None
+    oracle_receipt = None
+    if args.oracle_editor_predictions is not None:
+        if args.oracle_editor_receipt is None or editor_receipt is None:
+            parser.error("oracle editor comparison requires both editor receipts")
+        oracle_receipt = _verify_editor_receipt(
+            args.oracle_editor_receipt, args.oracle_editor_predictions
+        )
+        if oracle_receipt["program_source"] != "gold_oracle_ceiling":
+            raise LearningContractError("oracle editor artifact is not label-declared")
+        if oracle_receipt["editor_checkpoint_sha256"] != editor_receipt["editor_checkpoint_sha256"]:
+            raise LearningContractError("predicted/oracle comparison changed editor weights")
+        oracle_editor = _evaluate_editor_manifest(
+            args.oracle_editor_predictions, expected, visible, audit
+        )
+    causal_gap = (
+        _paired_patient_gap(
+            editor, oracle_editor, labels,
+            seed=args.bootstrap_seed, samples=args.bootstrap_samples,
+        )
+        if editor is not None and oracle_editor is not None else None
+    )
+    report = {
+        "schema_version": EVAL_SCHEMA,
+        "partition": args.partition,
+        "compiler": compiler,
+        "editor_predicted_calls": editor,
+        "editor_gold_call_ceiling": oracle_editor,
+        "predicted_vs_gold_same_editor_gap": causal_gap,
+        "denominator_domains": {
+            "2d_prompted_plane": "prompted axial plane only",
+            "3d_full_volume": "full original volume; never pooled with 2D",
+        },
+        "artifacts": {
+            "predictions_sha256": _sha256_file(args.predictions),
+            "prediction_receipt_sha256": _sha256_file(args.prediction_receipt),
+            "labels_sha256": _sha256_file(args.labels),
+            "inference_manifest_sha256": _sha256_file(args.inference_manifest),
+            "schema_sha256": _sha256_file(args.schema),
+            "compiler_checkpoint_sha256": prediction_receipt["checkpoint_sha256"],
+        },
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("x", encoding="utf-8", newline="\n") as stream:
+        json.dump(report, stream, indent=2, sort_keys=True, allow_nan=False)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    print(json.dumps({"status": "PASS", "output": str(args.output), "compiler": compiler}))
     return 0
 
 

@@ -1,0 +1,7 @@
+* text=auto eol=lf
+
+*.gz binary
+*.nii binary
+*.npz binary
+*.pt binary
+*.pth binary

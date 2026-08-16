@@ -37,7 +37,6 @@ from common.petct_learning import (  # noqa: E402
     load_jsonl,
     sha256_file,
 )
-from common.petct_models import EDITOR_PRIMARY_ARCHITECTURE_ID  # noqa: E402
 from common.petct_development_freeze import (  # noqa: E402
     DevelopmentFreezeError,
     SELECTED_CHECKPOINT_PREFIX,

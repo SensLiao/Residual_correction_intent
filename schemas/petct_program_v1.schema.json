@@ -7,18 +7,16 @@
   "additionalProperties": false,
   "required": [
     "schema_version",
+    "episode_id",
     "decision",
     "operation",
-    "family",
-    "operand",
-    "goal",
-    "protected_refs",
     "confidence",
     "typed_trace",
     "audit"
   ],
   "properties": {
     "schema_version": {"const": "PETCT-PROGRAM-v1.0"},
+    "episode_id": {"type": "string", "minLength": 1},
     "decision": {"enum": ["PREDICT", "ABSTAIN"]},
     "operation": {"enum": ["ADD", "REMOVE"]},
     "family": {
@@ -61,6 +59,7 @@
       "anyOf": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "null"}],
       "description": "raw posterior maximum; calibration/abstention thresholds are post-core"
     },
+    "abstain_reason": {"type": "string", "minLength": 1},
     "typed_trace": {
       "type": "array",
       "items": {
@@ -89,6 +88,24 @@
   },
   "allOf": [
     {
+      "if": {"properties": {"decision": {"const": "PREDICT"}}, "required": ["decision"]},
+      "then": {
+        "required": ["family", "operand", "goal", "protected_refs"],
+        "not": {"required": ["abstain_reason"]}
+      },
+      "else": {
+        "required": ["abstain_reason"],
+        "not": {
+          "anyOf": [
+            {"required": ["family"]},
+            {"required": ["operand"]},
+            {"required": ["goal"]},
+            {"required": ["protected_refs"]}
+          ]
+        }
+      }
+    },
+    {
       "if": {"properties": {"operation": {"const": "ADD"}}},
       "then": {"properties": {"family": {"enum": ["GROW_LOCAL", "COMPLETE_EXISTING", "CREATE_NEW"]}}}
     },
@@ -97,7 +114,10 @@
       "then": {"properties": {"family": {"enum": ["TRIM_LOCAL", "DELETE_COMPONENT", "REPAIR_OVERSEGMENTED_COMPONENT"]}}}
     },
     {
-      "if": {"properties": {"family": {"const": "CREATE_NEW"}}},
+      "if": {
+        "properties": {"family": {"const": "CREATE_NEW"}},
+        "required": ["family"]
+      },
       "then": {
         "properties": {
           "operand": {"const": "NEW_CUE"},
@@ -113,6 +133,71 @@
     {
       "if": {"properties": {"operation": {"const": "REMOVE"}}},
       "then": {"properties": {"operand": {"not": {"const": "NEW_CUE"}}}}
+    },
+    {
+      "if": {"properties": {"family": {"const": "GROW_LOCAL"}}, "required": ["family"]},
+      "then": {"properties": {"goal": {"const": "ADD_SAME_LOCAL"}}}
+    },
+    {
+      "if": {"properties": {"family": {"const": "COMPLETE_EXISTING"}}, "required": ["family"]},
+      "then": {"properties": {"goal": {"const": "ADD_SAME_COMPLETE"}}}
+    },
+    {
+      "if": {"properties": {"family": {"const": "TRIM_LOCAL"}}, "required": ["family"]},
+      "then": {"properties": {"goal": {"const": "REMOVE_SAME_LOCAL"}}}
+    },
+    {
+      "if": {"properties": {"family": {"const": "DELETE_COMPONENT"}}, "required": ["family"]},
+      "then": {"properties": {"goal": {"const": "REMOVE_NEW_COMPLETE"}}}
+    },
+    {
+      "if": {"properties": {"family": {"const": "REPAIR_OVERSEGMENTED_COMPONENT"}}, "required": ["family"]},
+      "then": {"properties": {"goal": {"const": "REMOVE_SAME_COMPLETE"}}}
+    },
+    {
+      "if": {
+        "properties": {"operation": {"const": "ADD"}, "family": {"not": {"const": "CREATE_NEW"}}},
+        "required": ["family"]
+      },
+      "then": {
+        "properties": {
+          "protected_refs": {
+            "properties": {
+              "monotone_update": {"const": true},
+              "selected_component_scope": {"const": true},
+              "new_cue_channel_all_zero": {"const": false}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"family": {"const": "CREATE_NEW"}}, "required": ["family"]},
+      "then": {
+        "properties": {
+          "protected_refs": {
+            "properties": {
+              "monotone_update": {"const": true},
+              "selected_component_scope": {"const": false},
+              "new_cue_channel_all_zero": {"const": true}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"operation": {"const": "REMOVE"}}, "required": ["operation", "family"]},
+      "then": {
+        "properties": {
+          "protected_refs": {
+            "properties": {
+              "monotone_update": {"const": false},
+              "selected_component_scope": {"const": true},
+              "new_cue_channel_all_zero": {"const": false}
+            }
+          }
+        }
+      }
     }
   ]
 }
