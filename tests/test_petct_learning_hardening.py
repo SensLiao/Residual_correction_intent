@@ -108,3 +108,26 @@ def test_atomic_multi_file_publish_rolls_back_if_one_commit_fails(
     assert not first.exists()
     assert not second.exists()
     assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_v21_operation_control_config_loads_and_frozen_v2_still_loads(
+    tmp_path: Path,
+) -> None:
+    """Regression: the v2.1 config (D-2026-08-06-02) must load through
+    load_experiment_config; the frozen v2 must keep loading; unknown schemas reject."""
+    v21 = load_experiment_config(
+        PROJECT / "configs" / "petct_route_a_experiment_operation_control_v2_1.json"
+    )
+    assert v21["schema_version"] == "PETCT-ROUTE-A-EXPERIMENT-v2.1"
+    arms = v21["p2t"]["simple_first_input_arms"]
+    assert arms == ["full", "no_M0", "polarity_blind", "geometry_only", "operation_control"]
+    assert "operation_control" in load_p2t_evaluation_contract(v21)["ablation_inputs"]
+
+    v2 = load_experiment_config(PROJECT / "configs" / "petct_route_a_experiment.json")
+    assert v2["schema_version"] == "PETCT-ROUTE-A-EXPERIMENT-v2.0"
+    assert len(v2["p2t"]["simple_first_input_arms"]) == 4
+
+    bogus = tmp_path / "bogus.json"
+    bogus.write_text('{"schema_version": "PETCT-ROUTE-A-EXPERIMENT-v9.9"}', encoding="utf-8")
+    with pytest.raises(LearningContractError, match="unsupported experiment config schema"):
+        load_experiment_config(bogus)

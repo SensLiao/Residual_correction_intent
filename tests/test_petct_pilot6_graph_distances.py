@@ -130,8 +130,8 @@ def test_construct_pilot6_states_bbox_path_equivalent():
     }
 
 
-def test_matched_state_six_converts_rederivation_failure_to_ineligible(monkeypatch):
-    """R4 regression: derive-goal semantic failures become counted exclusions."""
+def test_matched_state_six_treats_rederivation_failure_as_system_error(monkeypatch):
+    """Constructor/derive disagreement must abort, never censor the corpus."""
     import sys
     from pathlib import Path
 
@@ -157,33 +157,32 @@ def test_matched_state_six_converts_rederivation_failure_to_ineligible(monkeypat
         center = tuple(rng.integers(8, 22, size=3))
         zz, yy, xx = np.ogrid[:30, :30, :30]
         gt |= ((zz - center[0]) ** 2 + (yy - center[1]) ** 2 + (xx - center[2]) ** 2) <= 49
-    result = builder.build_matched_state_six(
-        gt.astype(np.float32), np.zeros_like(gt, dtype=np.float32), gt,
-        spacing_xy=(2.734, 2.734),
-        strategy="centerline",
-        simulator=_fake_sim,
-        generation={"official_commit": "c", "seed": 42, "strategy_mode": "primary",
-                    "strategy_salt": "s", "strategy_assignment": "stable-patient-hash"},
-        local_radius_mm=15.0,
-        minimum_local_area_mm2=50.0,
-        learning_partition="train",
-    )
-    assert result["eligible"] is False
-    assert str(result["reason"]).startswith("STATE_REDERIVATION_FAILED:")
+    with pytest.raises(builder.MatchedStateGeometryError, match="STATE_REDERIVATION_FAILED"):
+        builder.build_matched_state_six(
+            gt.astype(np.float32), np.zeros_like(gt, dtype=np.float32), gt,
+            spacing_xy=(2.734, 2.734),
+            strategy="centerline",
+            simulator=_fake_sim,
+            generation={"official_commit": "c", "seed": 42, "strategy_mode": "primary",
+                        "strategy_salt": "s", "strategy_assignment": "stable-patient-hash"},
+            local_radius_mm=15.0,
+            minimum_local_area_mm2=50.0,
+            learning_partition="train",
+        )
 
 
-def test_visible_safe_receipt_strips_forbidden_fragments():
-    """R5 regression: receipt fields like thresholds.min_component_voxels must
-    not reach the visible packet (firewall fragments: gt/gold/residual/
-    component/authorized/target/source_case/source_patient)."""
+def test_visible_firewall_rejects_forbidden_receipt_without_silent_sanitizing():
+    """Audit receipts cannot be passed wholesale into the visible packet."""
     import sys
     from pathlib import Path
 
     SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
     if str(SCRIPTS) not in sys.path:
         sys.path.insert(0, str(SCRIPTS))
-    from p2t import build_petct_matched_state_dataset as builder
-    from data.build_petct_scribble_episode import _assert_visible_safe
+    from data.build_petct_scribble_episode import (
+        EpisodeContractError,
+        _assert_visible_safe,
+    )
 
     receipt = {
         "schema_version": "x",
@@ -200,13 +199,10 @@ def test_visible_safe_receipt_strips_forbidden_fragments():
         "stage_order": ["a", "b"],
         "matched_goals": ["ADD_SAME_LOCAL"],
     }
-    safe = builder._visible_safe_receipt(receipt)
-    # forbidden subtrees gone, harmless ones kept
-    assert "thresholds" not in safe or "min_component_voxels" not in safe["thresholds"]
-    assert "gt_content_sha256" not in safe.get("input_content_sha256", {})
-    assert "residual_sha256" not in safe
-    assert safe["stage_order"] == ["a", "b"]
-    _assert_visible_safe({"m0_provenance": {"materializer_receipt": safe}})
+    with pytest.raises(EpisodeContractError, match="forbidden evaluation"):
+        _assert_visible_safe(
+            {"m0_provenance": {"materializer_receipt": receipt}}
+        )
 
 
 def test_pilot6_v2_construction_derives_same_goals():

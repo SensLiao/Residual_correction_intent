@@ -4,6 +4,7 @@ Pure-python and small-tensor tests only; no server data or weights.
 """
 
 import sys
+import json
 from pathlib import Path
 
 import numpy as np
@@ -29,7 +30,6 @@ from common.petct_program_contract import (  # noqa: E402
     ProgramContractError,
     compile_legal_call,
     family_ids,
-    goal_to_family_id,
     operation_from_cue_sign,
     rendered_slots,
     validate_legal_call,
@@ -37,6 +37,7 @@ from common.petct_program_contract import (  # noqa: E402
 from common.petct_program_learning import (  # noqa: E402
     GroupedBatchSampler,
     LearningContractError,
+    load_label_manifest,
     matched_family_margin_loss,
     multi_positive_pointer_loss,
 )
@@ -98,6 +99,45 @@ def test_compile_legal_call_record():
     assert call["family"] == "COMPLETE_EXISTING"
     assert call["goal"] == "ADD_SAME_COMPLETE"
     assert call["grammar_version"] == GRAMMAR_VERSION
+
+
+def test_program_schema_abstain_needs_no_fake_call_and_predict_mapping_is_typed():
+    jsonschema = pytest.importorskip("jsonschema")
+    schema_path = Path(__file__).resolve().parents[1] / "schemas" / "petct_program_v1.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    validator = jsonschema.Draft202012Validator(schema)
+    base = {
+        "schema_version": "PETCT-PROGRAM-v1.0",
+        "episode_id": "opaque-episode",
+        "operation": "ADD",
+        "confidence": None,
+        "typed_trace": [],
+        "audit": {
+            "grammar_version": "PETCT-PROGRAM-GRAMMAR-v1.0",
+            "enumeration_version": "v",
+            "m_sha256": "a" * 64,
+            "manifest_sha256": "b" * 64,
+            "checkpoint_hash": None,
+            "visibility_lane": "inference_visible",
+        },
+    }
+    abstain = {**base, "decision": "ABSTAIN", "abstain_reason": "low confidence"}
+    validator.validate(abstain)
+    assert not validator.is_valid({**abstain, "family": "CREATE_NEW"})
+    inconsistent = {
+        **base,
+        "decision": "PREDICT",
+        "family": "CREATE_NEW",
+        "operand": "NEW_CUE",
+        "goal": "REMOVE_NEW_COMPLETE",
+        "protected_refs": {
+            "protected_complement": True,
+            "monotone_update": True,
+            "selected_component_scope": False,
+            "new_cue_channel_all_zero": True,
+        },
+    }
+    assert not validator.is_valid(inconsistent)
 
 
 # -------------------------------------------------------------- components
@@ -196,12 +236,49 @@ def test_grouped_batch_sampler_keeps_groups_whole():
         assert len(batch_groups) == 1
 
 
+def test_label_manifest_rejects_six_rows_mixed_across_signed_operations(
+    tmp_path: Path,
+):
+    path = tmp_path / "labels.jsonl"
+    rows = []
+    for index, goal in enumerate(
+        (
+            "ADD_SAME_LOCAL",
+            "ADD_SAME_COMPLETE",
+            "ADD_NEW_COMPLETE",
+            "REMOVE_SAME_LOCAL",
+            "REMOVE_SAME_COMPLETE",
+            "REMOVE_NEW_COMPLETE",
+        )
+    ):
+        operation = goal.split("_", 1)[0]
+        rows.append(
+            {
+                "schema_version": "PETCT-PROGRAM-LABEL-MANIFEST-v1.0",
+                "episode_id": "ep-%d" % index,
+                "case_id": "case-a",
+                "patient_id": "patient-a",
+                "partition": "train",
+                "goal": goal,
+                "operation": operation,
+                "matched_state_group_id": "incorrect-six-row-group",
+                "evaluation_npz": "unused",
+                "evaluation_sha256": "unused",
+                "learning_split_sha256": "unused",
+            }
+        )
+    path.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    with pytest.raises(LearningContractError, match="same-operation triplet"):
+        load_label_manifest(path)
+
+
 # ------------------------------------------------------------------ models
 
 
 def test_program_embedding_null_is_exact_zero():
     embedding = ProgramEmbedding(dim=16)
-    batch = 3
     output = embedding(
         torch.tensor([-1, -1, -1]),
         torch.tensor([2, 2, 2]),
@@ -249,11 +326,11 @@ def test_editor_add_algebra_is_monotone_and_remove_is_restricted():
     assert corrected_remove[0, 0, 0, 0] == 1.0  # protected
 
 
-def test_editor_rejects_nonzero_selected_channel_for_add():
+def test_editor_accepts_selected_channel_for_add_existing_without_deleting_m0():
     logits = torch.zeros(1, 1, 2, 2)
-    m0 = torch.zeros(1, 1, 2, 2)
+    m0 = torch.tensor([[[[1.0, 0.0], [0.0, 0.0]]]])
     selected = torch.ones(1, 1, 2, 2)
-    with pytest.raises(ProgramContractError):
-        ProgramEditorUNet2D.apply_program_operation(
-            logits, m0, selected, torch.tensor([0]), threshold=0.5
-        )
+    _, corrected = ProgramEditorUNet2D.apply_program_operation(
+        logits, m0, selected, torch.tensor([0]), threshold=0.5
+    )
+    assert corrected[0, 0, 0, 0]

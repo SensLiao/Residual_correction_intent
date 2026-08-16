@@ -133,7 +133,12 @@ def compile_legal_call(
 ) -> Dict[str, str]:
     """Compile a scored family id and operand into a validated call record."""
 
-    family = family_ids(operation, include_repair)[family_id]
+    legal = family_ids(operation, include_repair)
+    if not 0 <= int(family_id) < len(legal):
+        raise ProgramContractError(
+            "family id %s is out of range for operation %s" % (family_id, operation)
+        )
+    family = legal[int(family_id)]
     validate_legal_call(operation, family, operand)
     return {
         "grammar_version": GRAMMAR_VERSION,
@@ -204,7 +209,10 @@ def protected_refs_policy(operation: str, operand: str) -> Mapping[str, object]:
     update additionally preserves every existing foreground voxel.
     """
 
-    validate_legal_call(operation, "CREATE_NEW" if operand == NEW_CUE_SENTINEL else "GROW_LOCAL", operand)
+    if operation not in OPERATIONS:
+        raise ProgramContractError("unknown operation: %s" % operation)
+    if operation == "REMOVE" and operand == NEW_CUE_SENTINEL:
+        raise ProgramContractError("REMOVE requires a component operand")
     return {
         "protected_complement": True,
         "monotone_update": operation == "ADD",

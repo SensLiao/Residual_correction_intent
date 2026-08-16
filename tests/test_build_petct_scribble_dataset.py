@@ -31,6 +31,20 @@ from data.build_petct_scribble_episode import (  # noqa: E402
 )
 
 
+def _autopetv_runtime_root_or_skip() -> Path:
+    candidates = (
+        PROJECT / "external_runners" / "autopetv_protocol",
+        PROJECT / "upstream" / "autoPETV",
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    pytest.skip(
+        "requires the pinned autoPETV minimal runtime or upstream checkout; "
+        "neither vendor asset directory is present"
+    )
+
+
 def test_v2_generation_contract_is_bidirectional_and_exact() -> None:
     config = json.loads(
         (PROJECT / "configs" / "petct_route_a_experiment.json").read_text(
@@ -50,7 +64,7 @@ def test_current_v2_runtime_manifest_provenance_flows_into_dataset_and_v1_fails_
 ) -> None:
     runtime_root = tmp_path / "autopetv-minimal-runtime"
     (runtime_root / "interactive").mkdir(parents=True)
-    upstream = PROJECT / "upstream" / "autoPETV"
+    upstream = _autopetv_runtime_root_or_skip()
     for relative in (
         "LICENSE",
         "interactive/simulate_scribbles.py",

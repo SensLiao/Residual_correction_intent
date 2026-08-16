@@ -17,8 +17,28 @@ from evaluate_petct_p2t import (  # noqa: E402
     _per_goal_diagnostics,
     _per_strategy_diagnostics,
     _validate_prediction_rows_for_release,
+    accepted_experiment_config_shas,
     decode_legal_joint,
 )
+
+
+def test_derived_config_accepts_parent_manifest_digest() -> None:
+    # D-2026-08-09-01: v2.1 operation_control arm consumes a manifest frozen
+    # under its parent config; both digests must be accepted.
+    config = {"derived_from": {"parent_sha256": "94b7b6a688b0eeb2"}}
+    accepted = accepted_experiment_config_shas("246e107e503e2ec0", config)
+    assert accepted == frozenset({"246e107e503e2ec0", "94b7b6a688b0eeb2"})
+
+
+def test_base_config_accepts_only_own_digest() -> None:
+    accepted = accepted_experiment_config_shas("own-sha-abc", {})
+    assert accepted == frozenset({"own-sha-abc"})
+
+
+def test_non_string_parent_sha_is_ignored() -> None:
+    config = {"derived_from": {"parent_sha256": None}}
+    accepted = accepted_experiment_config_shas("own-sha-abc", config)
+    assert accepted == frozenset({"own-sha-abc"})
 
 
 def test_decoder_emits_only_six_joint_defined_slot_tuples() -> None:

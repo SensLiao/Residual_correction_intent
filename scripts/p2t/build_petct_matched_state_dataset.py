@@ -57,10 +57,8 @@ from data.build_petct_scribble_episode import (  # noqa: E402
     publish_episode_documents,
 )
 from data.materialize_petct_pilot6_states import (  # noqa: E402
-    DATASET_ID,
     GOALS,
     GOALS_BY_OPERATION,
-    construct_pilot6_states,
 )
 from data.validate_petct_learning_split import (  # noqa: E402
     load_and_validate_learning_split,
@@ -77,6 +75,10 @@ CONTROLLED_STAGE_ORDER = (
     "state_relative_lesion_binding",
     "canonical_intent_rendering",
 )
+
+
+class MatchedStateGeometryError(RuntimeError):
+    """Constructor/validator disagreement: a system error, never an exclusion."""
 
 
 def _mask_sha256(mask: np.ndarray) -> str:
@@ -98,47 +100,69 @@ def _group_id(case_id: str, strategy: str) -> str:
     return "matched-" + digest[:24]
 
 
-def _episode_id(group_id: str, goal: str) -> str:
-    digest = hashlib.sha256(
-        f"PETCT-P2T-EPISODE-v2|{group_id}|{goal}".encode("utf-8")
-    ).hexdigest()
-    return "petct-" + digest[:24]
+def _matched_state_group_id(attempt_id: str, operation: str) -> str:
+    """Bind a matched sibling group to one signed-cue operation only.
 
-
-_VISIBLE_FORBIDDEN_FRAGMENTS = (
-    "gt",
-    "gold",
-    "residual",
-    "component",
-    "authorized",
-    "target",
-    "source_case",
-    "source_patient",
-)
-
-
-def _visible_safe_receipt(value: Any) -> Any:
-    """Recursively strip evaluation-lane field names from a receipt subtree.
-
-    Mirrors the visible-document firewall fragments so the controlled
-    materializer receipt can be bound into the visible packet without
-    leaking GT-derived field names (the full receipt stays in the
-    evaluation document).
+    An attempt may construct both ADD and REMOVE triplets, but those triplets
+    use different signed cues and must never share a margin-loss group id.
+    Operation is inference-visible, so including it does not encode a label.
     """
 
-    if isinstance(value, dict):
-        output: dict[str, Any] = {}
-        for key, child in value.items():
-            if any(
-                fragment in str(key).casefold()
-                for fragment in _VISIBLE_FORBIDDEN_FRAGMENTS
-            ):
-                continue
-            output[key] = _visible_safe_receipt(child)
-        return output
-    if isinstance(value, list):
-        return [_visible_safe_receipt(child) for child in value]
-    return value
+    if operation not in GOALS_BY_OPERATION:
+        raise ValueError("operation must be ADD or REMOVE")
+    digest = hashlib.sha256(
+        f"PETCT-P2T-MATCHED-OP-v2|{attempt_id}|{operation}".encode("utf-8")
+    ).hexdigest()
+    return "matched-op-" + digest[:24]
+
+
+def _episode_id(
+    *,
+    attempt_id: str,
+    operation: str,
+    state_content_sha256: str,
+    cue_coordinate_sha256: str,
+) -> str:
+    """Return a stable opaque ID without accepting or hashing a gold goal.
+
+    The identity is content-bound to inference-visible state/cue material and
+    the signed-cue operation.  ``attempt_id`` supplies stable corpus identity
+    but is not published in the visible episode document.
+    """
+
+    if operation not in {"ADD", "REMOVE"}:
+        raise ValueError("operation must be ADD or REMOVE")
+    for name, value in (
+        ("state_content_sha256", state_content_sha256),
+        ("cue_coordinate_sha256", cue_coordinate_sha256),
+    ):
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+    if not isinstance(attempt_id, str) or not attempt_id:
+        raise ValueError("attempt_id must be a non-empty stable identity")
+    lowered_attempt = attempt_id.casefold()
+    if (
+        any(fragment in lowered_attempt for fragment in ("goal", "gold", "label"))
+        or any(str(goal).casefold() in lowered_attempt for goal in GOALS)
+    ):
+        raise ValueError("attempt_id must not be label-derived")
+    identity = {
+        "attempt_id": attempt_id,
+        "cue_coordinate_sha256": cue_coordinate_sha256,
+        "operation": operation,
+        "state_content_sha256": state_content_sha256,
+    }
+    digest = hashlib.sha256(
+        (
+            "PETCT-P2T-EPISODE-v3|"
+            + json.dumps(identity, sort_keys=True, separators=(",", ":"))
+        ).encode("utf-8")
+    ).hexdigest()
+    return "petct-" + digest[:24]
 
 
 def build_matched_state_six(
@@ -226,8 +250,8 @@ def build_matched_state_six(
         scribble = scribbles[operation]
         state = v2["states"][expected_goal]
         # Same-source-of-truth insurance: with the Euclidean anchor the
-        # re-derivation must always agree; a mismatch here is a system bug
-        # and still fails closed.
+        # re-derivation must always agree.  Any disagreement is a system bug,
+        # not a corpus eligibility outcome, and must abort the whole build.
         try:
             actual_goal, authorized, target_stats = derive_goal_and_authorized_target(
                 gt=gt,
@@ -238,20 +262,21 @@ def build_matched_state_six(
                 local_radius_mm=local_radius_mm,
                 minimum_local_area_mm2=minimum_local_area_mm2,
             )
-        except RuntimeError as exc:
-            return {
-                "eligible": False,
-                "reason": f"STATE_REDERIVATION_FAILED:{expected_goal}:{exc}",
-                "receipt": {"schema_version": PILOT6_V2_SCHEMA, "status": "INELIGIBLE"},
-                "scribbles": scribbles,
-            }
+        except Exception as exc:
+            raise MatchedStateGeometryError(
+                f"STATE_REDERIVATION_FAILED:{expected_goal}:{exc}"
+            ) from exc
         if actual_goal != expected_goal:
-            return {
-                "eligible": False,
-                "reason": f"STATE_RELATIVE_GOAL_MISMATCH:{expected_goal}->{actual_goal}",
-                "receipt": {"schema_version": PILOT6_V2_SCHEMA, "status": "INELIGIBLE"},
-                "scribbles": scribbles,
-            }
+            raise MatchedStateGeometryError(
+                f"STATE_RELATIVE_GOAL_MISMATCH:{expected_goal}->{actual_goal}"
+            )
+        if not np.array_equal(
+            np.asarray(authorized, dtype=bool),
+            np.asarray(state["authorized_target"], dtype=bool),
+        ):
+            raise MatchedStateGeometryError(
+                f"STATE_AUTHORIZED_GEOMETRY_MISMATCH:{expected_goal}"
+            )
         states[expected_goal] = {
             "m0": np.asarray(state["m0"], dtype=np.uint8),
             "operation": operation,
@@ -491,6 +516,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                             minimum_local_area_mm2=min_local_area,
                             learning_partition=partition,
                         )
+                    except MatchedStateGeometryError:
+                        # Constructor/derive drift is a code/protocol failure.
+                        # It must never be converted into a counted exclusion,
+                        # including under the secondary strategy arm.
+                        raise
                     except Exception as exc:
                         if generation["strategy_mode"] == "primary":
                             raise RuntimeError(
@@ -578,11 +608,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                     group_dir = state_stage / group_id
                     group_dir.mkdir()
                     final_group_dir = final_dirs[0] / group_id
+                    visible_episode_ids: set[str] = set()
                     for goal in GOALS:
-                        episode_id = _episode_id(group_id, goal)
                         state = pilot6["states"][goal]
                         operation = str(state["operation"])
+                        matched_group_id = _matched_state_group_id(
+                            attempt_id, operation
+                        )
                         scribble = scribbles[operation]
+                        state_content_sha256 = _mask_sha256(state["m0"])
+                        cue_coordinate_sha256 = str(scribble["coordinate_sha256"])
+                        episode_id = _episode_id(
+                            attempt_id=attempt_id,
+                            operation=operation,
+                            state_content_sha256=state_content_sha256,
+                            cue_coordinate_sha256=cue_coordinate_sha256,
+                        )
+                        if episode_id in visible_episode_ids:
+                            raise MatchedStateGeometryError(
+                                "INFERENCE_VISIBLE_EPISODE_COLLISION: distinct audit goals "
+                                "have identical visible state/cue identity"
+                            )
+                        visible_episode_ids.add(episode_id)
                         goal_dir = group_dir / goal
                         goal_dir.mkdir()
                         final_goal_dir = final_group_dir / goal
@@ -597,18 +644,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                         m0_provenance = {
                             "kind": "controlled_matched_state",
                             "schema_version": MATCHED_STATE_SCHEMA,
-                            "matched_state_group_id": group_id,
+                            "attempt_id": attempt_id,
+                            "matched_state_group_id": matched_group_id,
                             "goal": goal,
                             "operation": operation,
-                            # The full pilot6 receipt carries GT-derived field names
-                            # (gt_content_sha256, component thresholds, residual
-                            # provenance) that the visible-lane firewall forbids.
-                            # The complete receipt still reaches the evaluation
-                            # document; the visible packet keeps only the
-                            # opaque/eligible subset (2026-08-16 R5 fix).
-                            "materializer_receipt": _visible_safe_receipt(
-                                pilot6["receipt"]
-                            ),
+                            "state_content_sha256": state_content_sha256,
+                            "cue_coordinate_sha256": cue_coordinate_sha256,
+                            # Complete provenance remains available to the
+                            # physically separate evaluation/audit lane.  The
+                            # visible document applies its own strict allowlist.
+                            "materializer_receipt": pilot6["receipt"],
                         }
                         visible, evaluation = build_episode_documents(
                             episode_id=episode_id,
@@ -644,7 +689,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             {
                                 "schema_version": MATCHED_STATE_SCHEMA,
                                 "lane": "controlled_p2t",
-                                "matched_state_group_id": group_id,
+                                "matched_state_group_id": matched_group_id,
                                 "operation": operation,
                                 "target": state["target_stats"]["target"],
                                 "scope": goal.rsplit("_", 1)[1],
@@ -735,19 +780,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ) from exc
         group_counts: dict[str, int] = {}
         group_goals: dict[str, set[str]] = {}
+        group_operations: dict[str, set[str]] = {}
         for row in rows:
             group_id = row["matched_state_group_id"]
             group_counts[group_id] = group_counts.get(group_id, 0) + 1
             group_goals.setdefault(group_id, set()).add(str(row["goal"]))
+            group_operations.setdefault(group_id, set()).add(str(row["operation"]))
         if not group_counts:
             raise RuntimeError("no eligible controlled matched-state groups were produced")
-        if any(count != len(GOALS) for count in group_counts.values()):
+        if any(count != 3 for count in group_counts.values()):
             raise RuntimeError("staged matched-state group is incomplete")
-        if any(goals != set(GOALS) for goals in group_goals.values()):
-            raise RuntimeError("staged matched-state group lacks exact six-class coverage")
+        if any(len(operations) != 1 for operations in group_operations.values()):
+            raise RuntimeError("staged matched-state group mixes signed-cue operations")
+        for group_id, goals in group_goals.items():
+            operation = next(iter(group_operations[group_id]))
+            if goals != set(GOALS_BY_OPERATION[operation]):
+                raise RuntimeError(
+                    "staged matched-state group lacks its exact operation triplet"
+                )
+        generated_attempt_ids = {str(row["attempt_id"]) for row in rows}
         staged_group_ids = {path.name for path in state_stage.iterdir() if path.is_dir()}
-        if staged_group_ids != set(group_counts):
-            raise RuntimeError("staged state directories differ from complete groups")
+        if staged_group_ids != generated_attempt_ids:
+            raise RuntimeError("staged state directories differ from complete attempts")
         with staged[final_files[0]].open("x", encoding="utf-8", newline="\n") as stream:
             for row in rows:
                 stream.write(json.dumps(row, sort_keys=True) + "\n")
@@ -759,7 +813,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             stream.flush()
             os.fsync(stream.fileno())
 
-        generated_attempt_ids = {str(row["attempt_id"]) for row in rows}
         excluded_attempt_ids = {str(row["attempt_id"]) for row in exclusions}
         if len(excluded_attempt_ids) != len(exclusions):
             raise RuntimeError("one controlled attempt received multiple exclusions")

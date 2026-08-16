@@ -21,21 +21,21 @@ import numpy as np
 _SCRIPT_DIR = str(Path(__file__).resolve().parent)
 sys.path[:] = [_SCRIPT_DIR] + [entry for entry in sys.path if entry != _SCRIPT_DIR]
 
-from validate_petct_m0_oof import (
+from validate_petct_m0_oof import (  # noqa: E402
     EXPECTED_NNUNET_SOURCE_TREE_SHA256,
     INFERENCE_COMPILE_CONTRACT,
     OOF_CONTRACT_VERSION,
     commit_fold_done,
     validate_fold_plan_binding,
 )
-from validate_petct_m0_preprocess import (
+from validate_petct_m0_preprocess import (  # noqa: E402
     ContractError,
     _load_json,
     _sha256,
     _verify_record,
     _write_json_exclusive,
+    validate_live_nnunet_runtime,
 )
-from validate_petct_m0_preprocess import validate_live_nnunet_runtime
 
 
 OFFICIAL_METADATA = {

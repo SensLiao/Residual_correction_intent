@@ -219,10 +219,11 @@ def test_actual_validation_handoff_reuses_fold_outputs_without_predictor(
         },
     }
     _write(full_ready, full_ready_payload)
-    relative = lambda path: {
-        **_record(path),
-        "path": path.resolve().relative_to(campaign.resolve()).as_posix(),
-    }
+    def relative(path: Path) -> dict:
+        return {
+            **_record(path),
+            "path": path.resolve().relative_to(campaign.resolve()).as_posix(),
+        }
     _write(
         fold_receipt,
         {

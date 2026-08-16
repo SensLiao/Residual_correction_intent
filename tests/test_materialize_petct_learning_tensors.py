@@ -227,6 +227,7 @@ def _materialization_fixture(tmp_path: Path):
     row = {
         "case_id": "case-a",
         "episode_id": "ep-a",
+        "matched_state_group_id": "matched-state-a",
         "patient_id": "patient-a",
         "partition": "train",
         "held_out_fold": 0,

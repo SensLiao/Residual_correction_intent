@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import sys
 from pathlib import Path
 
@@ -27,8 +28,10 @@ from data.materialize_petct_pilot6_states import (  # noqa: E402
     label_components_18,
 )
 from p2t.build_petct_matched_state_dataset import (  # noqa: E402
+    MatchedStateGeometryError,
     _episode_id,
     _group_id,
+    _matched_state_group_id,
     build_matched_state_six,
 )
 
@@ -127,4 +130,63 @@ def test_v2_ids_are_deterministic_operation_distinct_and_not_v1_collisions() -> 
     )
     group = _group_id("case-a", "random")
     assert group == _group_id("case-a", "random")
-    assert len({_episode_id(group, goal) for goal in GOALS}) == len(GOALS)
+    assert _matched_state_group_id(group, "ADD") != _matched_state_group_id(
+        group, "REMOVE"
+    )
+    assert _matched_state_group_id(group, "ADD") == _matched_state_group_id(
+        group, "ADD"
+    )
+
+
+def test_episode_id_is_content_bound_and_has_no_gold_goal_input() -> None:
+    signature = inspect.signature(_episode_id)
+    assert "goal" not in signature.parameters
+    attempt_id = _group_id("case-a", "random")
+    common = {
+        "attempt_id": attempt_id,
+        "operation": "ADD",
+        "state_content_sha256": "a" * 64,
+        "cue_coordinate_sha256": "b" * 64,
+    }
+    episode_id = _episode_id(**common)
+    assert episode_id == _episode_id(**common)
+    assert episode_id != _episode_id(
+        **{**common, "state_content_sha256": "c" * 64}
+    )
+    assert episode_id != _episode_id(**{**common, "operation": "REMOVE"})
+    legacy_six_candidates = {
+        "petct-"
+        + hashlib.sha256(
+            f"PETCT-P2T-EPISODE-v2|{attempt_id}|{goal}".encode("utf-8")
+        ).hexdigest()[:24]
+        for goal in GOALS
+    }
+    assert episode_id not in legacy_six_candidates
+    with pytest.raises(TypeError):
+        _episode_id(attempt_id, "ADD_SAME_LOCAL")
+    with pytest.raises(ValueError, match="must not be label-derived"):
+        _episode_id(**{**common, "attempt_id": "attempt-ADD_SAME_LOCAL"})
+
+
+def test_goal_mismatch_is_a_hard_geometry_failure(monkeypatch) -> None:
+    pet, ct, gt = _case()
+
+    def _wrong_goal(**kwargs):
+        authorized = np.asarray(kwargs["m0"]) > 0
+        return "REMOVE_NEW_COMPLETE", authorized, {}
+
+    import p2t.build_petct_matched_state_dataset as builder
+
+    monkeypatch.setattr(builder, "derive_goal_and_authorized_target", _wrong_goal)
+    with pytest.raises(MatchedStateGeometryError, match="STATE_RELATIVE_GOAL_MISMATCH"):
+        build_matched_state_six(
+            pet,
+            ct,
+            gt,
+            spacing_xy=(2.0, 2.0),
+            strategy="random",
+            simulator=_dense_largest_slice_simulator,
+            generation={"official_commit": "abc", "seed": 42},
+            local_radius_mm=15.0,
+            minimum_local_area_mm2=50.0,
+        )

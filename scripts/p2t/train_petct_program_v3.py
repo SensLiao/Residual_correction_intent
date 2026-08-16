@@ -26,16 +26,20 @@ if str(SCRIPTS_ROOT) not in sys.path:
 
 from common.petct_program_contract import (  # noqa: E402
     ARCHITECTURE_ID,
-    ProgramContractError,
 )
+from common.petct_learning import patient_balanced_macro_f1_summary  # noqa: E402
 from common.petct_program_learning import (  # noqa: E402
     GroupedBatchSampler,
     InferenceEpisodeDataset,
     LearningContractError,
-    goal_to_family_id,
+    goal_to_local_family_id,
+    load_label_manifest,
     load_jsonl,
     matched_family_margin_loss,
     multi_positive_pointer_loss,
+    program_collate,
+    validate_program_manifest_receipt,
+    validate_training_split,
 )
 from common.petct_program_models import ProgramCompilerNet  # noqa: E402
 
@@ -75,34 +79,73 @@ def _load_pointer_targets(targets_dir: Path) -> dict:
     return targets
 
 
-def _patient_balanced_family_f1(
-    true_ids: list, pred_ids: list, patients: list, classes: list
-) -> float:
-    per_patient: dict = {}
-    for true_id, pred_id, patient in zip(true_ids, pred_ids, patients):
-        per_patient.setdefault(str(patient), {"tp": {}, "fp": {}, "fn": {}})
-        slot = per_patient[str(patient)]
-        if true_id == pred_id:
-            slot["tp"][true_id] = slot["tp"].get(true_id, 0) + 1
-        else:
-            slot["fp"][pred_id] = slot["fp"].get(pred_id, 0) + 1
-            slot["fn"][true_id] = slot["fn"].get(true_id, 0) + 1
-    macro = []
-    for class_id in classes:
-        patient_f1s = []
-        for slot in per_patient.values():
-            tp = slot["tp"].get(class_id, 0)
-            fp = slot["fp"].get(class_id, 0)
-            fn = slot["fn"].get(class_id, 0)
-            denom = 2 * tp + fp + fn
-            patient_f1s.append((2 * tp / denom) if denom else 1.0)
-        macro.append(float(np.mean(patient_f1s)))
-    return float(np.mean(macro))
+def _tree_sha256(directory: Path) -> str:
+    records = []
+    for path in sorted(value for value in directory.rglob("*") if value.is_file()):
+        records.append((path.relative_to(directory).as_posix(), _sha256_file(path)))
+    return hashlib.sha256(
+        json.dumps(records, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+
+def _build_placebo_groups(
+    labels: dict, *, partition: str, seed: int
+) -> tuple[dict[str, str], str]:
+    """Shuffle membership, not names, while preserving one row per family."""
+
+    rng = np.random.default_rng(seed)
+    assignment: dict[str, str] = {}
+    receipt_rows = []
+    for operation in ("ADD", "REMOVE"):
+        by_group: dict[str, dict[int, str]] = {}
+        for episode_id, row in labels.items():
+            if row["partition"] != partition or row["operation"] != operation:
+                continue
+            local = goal_to_local_family_id(str(row["goal"]), operation)
+            group = str(row["matched_state_group_id"])
+            if local in by_group.setdefault(group, {}):
+                raise LearningContractError("duplicate family inside matched group")
+            by_group[group][local] = episode_id
+        groups = sorted(by_group)
+        if len(groups) < 2:
+            raise LearningContractError("J3 placebo needs at least two groups per operation")
+        if any(set(by_group[group]) != {0, 1, 2} for group in groups):
+            raise LearningContractError("matched group lacks one of three legal families")
+        base = list(range(len(groups)))
+        rng.shuffle(base)
+        # Family 0 anchors a randomized target ordering; the other families
+        # are non-zero cyclic shifts.  This guarantees changed membership,
+        # including the two-group edge case where three independent random
+        # permutations could all coincide and merely rename intact groups.
+        shifts = (0, 1, 2 if len(groups) > 2 else 1)
+        permutations = [base[shift:] + base[:shift] for shift in shifts]
+        for target_index, target_group in enumerate(groups):
+            placebo_id = "placebo|%s|%06d" % (operation, target_index)
+            source_groups = []
+            for family in range(3):
+                source_group = groups[permutations[family][target_index]]
+                episode_id = by_group[source_group][family]
+                assignment[episode_id] = placebo_id
+                source_groups.append(source_group)
+            receipt_rows.append(
+                {"placebo_group": placebo_id, "source_groups_by_family": source_groups}
+            )
+            if len(set(source_groups)) < 2:
+                raise LearningContractError("J3 placebo did not change group membership")
+    if not assignment:
+        raise LearningContractError("J3 placebo assignment is empty")
+    digest = hashlib.sha256(
+        json.dumps(receipt_rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return assignment, digest
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--episodes", type=Path, required=True)
+    parser.add_argument("--labels", type=Path, required=True)
+    parser.add_argument("--learning-split", type=Path, required=True)
+    parser.add_argument("--manifest-receipt", type=Path, required=True)
     parser.add_argument("--candidates", type=Path, required=True)
     parser.add_argument("--pointer-targets", type=Path, default=None)
     parser.add_argument("--experiment-config", type=Path, required=True)
@@ -140,21 +183,33 @@ def main() -> int:
         parser.error("no train/val rows in episodes manifest")
     candidates = _load_candidates(args.candidates)
     pointer_targets = _load_pointer_targets(args.pointer_targets) if args.pointer_targets else {}
-    # Label-only join built at TRAIN time only; the dataset itself never
-    # reads goals from the manifest rows.
-    family_gold = {str(row["episode_id"]): str(row["goal"]) for row in rows}
-    group_shuffle = {}
+    labels = load_label_manifest(args.labels)
+    split_sha = validate_training_split(labels, args.learning_split)
+    validate_program_manifest_receipt(
+        args.manifest_receipt, args.episodes, args.labels, args.learning_split
+    )
+    visible_ids = {str(row["episode_id"]) for row in rows}
+    if visible_ids != set(labels):
+        raise LearningContractError("visible and label manifests do not have exact coverage")
+    group_override: dict[str, str] = {}
+    group_shuffle_sha = None
     if args.arm == "J3":
-        rng = np.random.default_rng(int(arm_config["group_shuffle_seed"]))
-        group_ids = sorted({str(row["matched_state_group_id"]) for row in rows})
-        shuffled = list(group_ids)
-        rng.shuffle(shuffled)
-        group_shuffle = dict(zip(group_ids, shuffled))
-    train = InferenceEpisodeDataset(args.episodes, "train", candidates, family_gold)
-    val = InferenceEpisodeDataset(args.episodes, "val", candidates, family_gold)
+        group_override, group_shuffle_sha = _build_placebo_groups(
+            labels,
+            partition="train",
+            seed=int(arm_config["group_shuffle_seed"]),
+        )
+    train = InferenceEpisodeDataset(args.episodes, "train", candidates, labels)
+    val = InferenceEpisodeDataset(args.episodes, "val", candidates, labels)
     train_rows = [row for row in rows if row["partition"] == "train"]
     effective_groups = [
-        group_shuffle.get(str(row["matched_state_group_id"]), str(row["matched_state_group_id"]))
+        group_override.get(
+            str(row["episode_id"]),
+            "%s|%s" % (
+                labels[str(row["episode_id"])]["matched_state_group_id"],
+                labels[str(row["episode_id"])]["operation"],
+            ),
+        )
         for row in train_rows
     ]
     torch.manual_seed(args.seed)
@@ -163,9 +218,14 @@ def main() -> int:
     train_loader = DataLoader(
         train,
         batch_sampler=GroupedBatchSampler(effective_groups, args.batch_size, args.seed),
+        collate_fn=program_collate,
     )
-    val_loader = DataLoader(val, batch_size=args.batch_size, shuffle=False)
-    model = ProgramCompilerNet().to(device)
+    val_loader = DataLoader(
+        val, batch_size=args.batch_size, shuffle=False, collate_fn=program_collate
+    )
+    model = ProgramCompilerNet(
+        include_repair=bool(config["grammar"]["include_repair"])
+    ).to(device)
     parameter_count = sum(p.numel() for p in model.parameters())
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate, weight_decay=training["weight_decay"]
@@ -191,7 +251,12 @@ def main() -> int:
                 loss = loss + lambda_group * matched_family_margin_loss(
                     family_logits,
                     family_gold,
-                    list(batch["group_id"]),
+                    [
+                        group_override.get(str(episode_id), str(group_id))
+                        for episode_id, group_id in zip(
+                            batch["episode_id"], batch["group_id"]
+                        )
+                    ],
                     batch["operation_id"].to(device),
                     margin,
                 )
@@ -218,6 +283,7 @@ def main() -> int:
             train_loss += float(loss.detach()) * visual.shape[0]
         model.eval()
         val_true, val_pred, val_patients = [], [], []
+        val_loss = 0.0
         with torch.no_grad():
             for batch in val_loader:
                 output = model(
@@ -228,18 +294,28 @@ def main() -> int:
                     batch["component_mask"].to(device),
                 )
                 family_gold = batch["family_gold"]
-                val_true.extend(family_gold.tolist())
-                val_pred.extend(output["family_logits"].argmax(dim=1).cpu().tolist())
+                predicted = output["family_logits"].argmax(dim=1).cpu()
+                operation_offset = batch["operation_id"].cpu() * 3
+                val_true.extend((family_gold.cpu() + operation_offset).tolist())
+                val_pred.extend((predicted + operation_offset).tolist())
                 val_patients.extend(list(batch["patient_id"]))
+                val_loss += float(
+                    torch.nn.functional.cross_entropy(
+                        output["family_logits"], family_gold.to(device), reduction="sum"
+                    )
+                )
+        metric = patient_balanced_macro_f1_summary(
+            val_true, val_pred, val_patients, list(range(6))
+        )
         row = {
             "epoch": epoch,
             "train_loss": train_loss / len(train),
-            "val_patient_balanced_family_macro_f1": _patient_balanced_family_f1(
-                val_true, val_pred, val_patients, [0, 1, 2]
-            ),
+            "val_loss": val_loss / len(val),
+            "val_patient_balanced_family_macro_f1": metric["estimate"],
+            "val_per_family_support": metric["per_class_support"],
         }
         history.append(row)
-        score = (row["val_patient_balanced_family_macro_f1"], -row["train_loss"])
+        score = (row["val_patient_balanced_family_macro_f1"], -row["val_loss"])
         if best is None or score > best["score"]:
             best = {"score": score, "row": dict(row)}
             best["state_dict"] = {
@@ -268,13 +344,23 @@ def main() -> int:
             if args.arm != "J3"
             else {
                 "shuffle_seed": int(arm_config["group_shuffle_seed"]),
-                "mapping_sha256": _sha256_bytes_hook(group_shuffle),
+                "membership_sha256": group_shuffle_sha,
             }
         ),
         "architecture_id": ARCHITECTURE_ID,
         "parameter_count": parameter_count,
         "episodes_manifest": str(args.episodes.resolve()),
         "episodes_sha256": _sha256_file(args.episodes),
+        "labels_manifest": str(args.labels.resolve()),
+        "labels_sha256": _sha256_file(args.labels),
+        "learning_split": str(args.learning_split.resolve()),
+        "learning_split_sha256": split_sha,
+        "manifest_receipt": str(args.manifest_receipt.resolve()),
+        "manifest_receipt_sha256": _sha256_file(args.manifest_receipt),
+        "candidates_tree_sha256": _tree_sha256(args.candidates),
+        "pointer_targets_tree_sha256": (
+            _tree_sha256(args.pointer_targets) if args.pointer_targets else None
+        ),
         "experiment_config": str(args.experiment_config.resolve()),
         "experiment_config_sha256": _sha256_file(args.experiment_config),
         "best": best["row"],
@@ -300,11 +386,6 @@ def main() -> int:
         )
     )
     return 0
-
-
-def _sha256_bytes_hook(mapping: dict) -> str:
-    payload = json.dumps(mapping, sort_keys=True).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
 
 
 if __name__ == "__main__":

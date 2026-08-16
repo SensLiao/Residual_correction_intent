@@ -42,6 +42,20 @@ def _copy_bytes(source: Path, target: Path) -> Path:
     return target
 
 
+def _autopetv_runtime_root_or_skip() -> Path:
+    candidates = (
+        PROJECT / "external_runners" / "autopetv_protocol",
+        PROJECT / "upstream" / "autoPETV",
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    pytest.skip(
+        "requires the pinned autoPETV minimal runtime or upstream checkout to "
+        "construct the F0 integrity fixture; neither vendor asset directory is present"
+    )
+
+
 def _fixture(tmp_path: Path) -> Dict[str, Union[Path, str]]:
     project = tmp_path / "project"
     project.mkdir()
@@ -51,16 +65,17 @@ def _fixture(tmp_path: Path) -> Dict[str, Union[Path, str]]:
         _write(project / relative, f"def test_{Path(relative).stem}():\n    pass\n")
 
     config = _write(project / "configs" / "petct_route_a_experiment.json", "{}\n")
+    autopetv_runtime = _autopetv_runtime_root_or_skip()
     simulator = _copy_bytes(
-        PROJECT / "upstream" / "autoPETV" / "interactive" / "simulate_scribbles.py",
+        autopetv_runtime / "interactive" / "simulate_scribbles.py",
         project / "external_runners" / "autopetv_protocol" / "interactive" / "simulate_scribbles.py",
     )
     metrics = _copy_bytes(
-        PROJECT / "upstream" / "autoPETV" / "metrics.py",
+        autopetv_runtime / "metrics.py",
         project / "external_runners" / "autopetv_protocol" / "metrics.py",
     )
     _copy_bytes(
-        PROJECT / "upstream" / "autoPETV" / "LICENSE",
+        autopetv_runtime / "LICENSE",
         project / "external_runners" / "autopetv_protocol" / "LICENSE",
     )
     runtime_manifest = _copy_bytes(

@@ -185,12 +185,12 @@ def bidirectional_correction_metrics(
         "complete_fp_removal_denominator_voxels": (
             float(authorized_count) if complete_remove_defined else 0.0
         ),
-        "fpv_ml": (
+        "raw_voxel_fp_volume_ml": (
             None
             if volume_ml_factor is None
             else float(false_positive.sum() * volume_ml_factor)
         ),
-        "fnv_ml": (
+        "raw_voxel_fn_volume_ml": (
             None
             if volume_ml_factor is None
             else float(false_negative.sum() * volume_ml_factor)

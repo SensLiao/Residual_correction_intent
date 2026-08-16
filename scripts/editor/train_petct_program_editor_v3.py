@@ -27,13 +27,15 @@ if str(SCRIPTS_ROOT) not in sys.path:
 from common.petct_program_learning import (  # noqa: E402
     LearningContractError,
     ProgramEpisodeDataset,
-    _load_components,
-    _load_visible_bundle,
     _sha256_file,
-    load_jsonl,
+    load_label_manifest,
+    program_collate,
+    validate_program_manifest_receipt,
+    validate_training_split,
 )
 from common.petct_program_models import (  # noqa: E402
     PROGRAM_EDITOR_ARCHITECTURE_ID,
+    ProgramCompilerNet,
     ProgramEditorUNet2D,
 )
 
@@ -91,12 +93,44 @@ def soft_dice_loss(logits: torch.Tensor, target: torch.Tensor, epsilon: float = 
     return (1.0 - (2.0 * intersection + epsilon) / (denom + epsilon)).mean()
 
 
+def _tree_sha256(directory: Path) -> str:
+    records = []
+    for path in sorted(value for value in directory.rglob("*") if value.is_file()):
+        records.append((path.relative_to(directory).as_posix(), _sha256_file(path)))
+    return hashlib.sha256(
+        json.dumps(records, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+
+def _load_frozen_compiler(path: Path, *, split_sha: str, device: torch.device):
+    if not path.is_file():
+        raise LearningContractError("missing compiler checkpoint: %s" % path)
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    if (
+        checkpoint.get("schema_version") != "PETCT-PROGRAM-COMPILER-CHECKPOINT-v1.0"
+        or checkpoint.get("architecture_id") != "matched_legal_component_program_v1"
+        or checkpoint.get("learning_split_sha256") != split_sha
+    ):
+        raise LearningContractError("continuous control compiler checkpoint is incompatible")
+    include_repair = bool(checkpoint.get("hyperparameters", {}).get("include_repair", True))
+    compiler = ProgramCompilerNet(include_repair=include_repair).to(device)
+    compiler.load_state_dict(checkpoint["state_dict"], strict=True)
+    compiler.eval()
+    for parameter in compiler.parameters():
+        parameter.requires_grad_(False)
+    return compiler
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--episodes", type=Path, required=True)
+    parser.add_argument("--labels", type=Path, required=True)
+    parser.add_argument("--learning-split", type=Path, required=True)
+    parser.add_argument("--manifest-receipt", type=Path, required=True)
     parser.add_argument("--candidates", type=Path, required=True)
     parser.add_argument("--pointer-targets", type=Path, default=None)
     parser.add_argument("--predicted-calls", type=Path, default=None)
+    parser.add_argument("--compiler-checkpoint", type=Path, default=None)
     parser.add_argument("--experiment-config", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--arm", choices=["J6", "J7", "J8", "J9"], required=True)
@@ -109,8 +143,13 @@ def main() -> int:
     args = parser.parse_args()
     if args.output.exists():
         parser.error("output already exists")
-    if args.arm == "J9" and args.call_source == "predicted" and args.predicted_calls is None:
-        parser.error("J9 predicted call source requires --predicted-calls")
+    if args.call_source != "gold":
+        parser.error(
+            "editor training is gold-call only; inject predicted calls at evaluation "
+            "with the same frozen editor checkpoint"
+        )
+    if args.arm == "J8" and args.compiler_checkpoint is None:
+        parser.error("J8 requires --compiler-checkpoint for frozen state embeddings")
     with args.experiment_config.open(encoding="utf-8") as stream:
         config = json.load(stream)
     if config.get("schema_version") != "PETCT-ROUTE-A-EXPERIMENT-v3.0":
@@ -120,9 +159,11 @@ def main() -> int:
         parser.error("seed %d is not in editor.training.seeds" % args.seed)
     loss_config = config["editor"]["training"]["loss"]
     dropout = float(config["editor"]["program_dropout"])
-    rows = [row for row in load_jsonl(args.episodes) if row.get("partition") in ("train", "val")]
-    if not rows:
-        parser.error("no train/val rows in episodes manifest")
+    labels = load_label_manifest(args.labels)
+    split_sha = validate_training_split(labels, args.learning_split)
+    validate_program_manifest_receipt(
+        args.manifest_receipt, args.episodes, args.labels, args.learning_split
+    )
     candidates = _load_candidates(args.candidates)
     pointer_targets = _load_pointer_targets(args.pointer_targets) if args.pointer_targets else {}
     predicted_calls = _load_predicted_calls(args.predicted_calls) if args.predicted_calls else {}
@@ -130,24 +171,34 @@ def main() -> int:
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
     train = ProgramEpisodeDataset(
-        args.episodes, "train", candidates, pointer_targets, predicted_calls,
+        args.episodes, labels, "train", candidates, pointer_targets, predicted_calls,
         editor_condition=condition, call_source=args.call_source,
         program_dropout=dropout, seed=args.seed,
     )
     val = ProgramEpisodeDataset(
-        args.episodes, "val", candidates, pointer_targets, predicted_calls,
+        args.episodes, labels, "val", candidates, pointer_targets, predicted_calls,
         editor_condition=condition, call_source=args.call_source,
         program_dropout=0.0, seed=args.seed,
     )
     train_loader = DataLoader(
         train, batch_size=args.batch_size, shuffle=True,
         generator=torch.Generator().manual_seed(args.seed),
+        collate_fn=program_collate,
     )
-    val_loader = DataLoader(val, batch_size=args.batch_size, shuffle=False)
+    val_loader = DataLoader(
+        val, batch_size=args.batch_size, shuffle=False, collate_fn=program_collate
+    )
     model = ProgramEditorUNet2D(
         visual_channels=12 if condition == "spatial_only" else 13,
         conditioner="continuous" if condition == "continuous" else "program",
     ).to(device)
+    frozen_compiler = (
+        _load_frozen_compiler(
+            args.compiler_checkpoint, split_sha=split_sha, device=device
+        )
+        if condition == "continuous"
+        else None
+    )
     parameter_count = model.parameter_count()
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate, weight_decay=training["weight_decay"]
@@ -162,12 +213,22 @@ def main() -> int:
             family = batch["family_id"].to(device)
             operand = batch["operand_mode"].to(device)
             support = batch["support_mode"].to(device)
+            state_embedding = None
+            if frozen_compiler is not None:
+                with torch.no_grad():
+                    state_embedding = frozen_compiler(
+                        batch["compiler_visual"].to(device),
+                        batch["spacing_xy"].to(device),
+                        batch["operation_id"].to(device),
+                        batch["component_vectors"].to(device),
+                        batch["component_mask"].to(device),
+                    )["embedding"]
             logits = model(
                 visual,
                 family,
                 operand,
                 support,
-                state_embedding=None,
+                state_embedding=state_embedding,
                 active_mask=batch["active"].to(device),
             )
             target = batch["authorized"] if "authorized" in batch else None
@@ -193,12 +254,21 @@ def main() -> int:
         with torch.no_grad():
             for batch in val_loader:
                 visual = batch["visual"].to(device)
+                state_embedding = None
+                if frozen_compiler is not None:
+                    state_embedding = frozen_compiler(
+                        batch["compiler_visual"].to(device),
+                        batch["spacing_xy"].to(device),
+                        batch["operation_id"].to(device),
+                        batch["component_vectors"].to(device),
+                        batch["component_mask"].to(device),
+                    )["embedding"]
                 logits = model(
                     visual,
                     batch["family_id"].to(device),
                     batch["operand_mode"].to(device),
                     batch["support_mode"].to(device),
-                    state_embedding=None,
+                    state_embedding=state_embedding,
                     active_mask=batch["active"].to(device),
                 )
                 target = batch["authorized"].to(device)
@@ -234,6 +304,22 @@ def main() -> int:
         "parameter_count": parameter_count,
         "episodes_manifest": str(args.episodes.resolve()),
         "episodes_sha256": _sha256_file(args.episodes),
+        "labels_manifest": str(args.labels.resolve()),
+        "labels_sha256": _sha256_file(args.labels),
+        "learning_split": str(args.learning_split.resolve()),
+        "learning_split_sha256": split_sha,
+        "manifest_receipt": str(args.manifest_receipt.resolve()),
+        "manifest_receipt_sha256": _sha256_file(args.manifest_receipt),
+        "candidates_tree_sha256": _tree_sha256(args.candidates),
+        "pointer_targets_tree_sha256": (
+            _tree_sha256(args.pointer_targets) if args.pointer_targets else None
+        ),
+        "compiler_checkpoint": (
+            None if args.compiler_checkpoint is None else str(args.compiler_checkpoint.resolve())
+        ),
+        "compiler_checkpoint_sha256": (
+            None if args.compiler_checkpoint is None else _sha256_file(args.compiler_checkpoint)
+        ),
         "experiment_config": str(args.experiment_config.resolve()),
         "experiment_config_sha256": _sha256_file(args.experiment_config),
         "best": best["row"],
