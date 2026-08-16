@@ -44,6 +44,15 @@ def _dense_largest_slice_simulator(mask, *, strategy, seed):
     del strategy, seed
     z = max(range(mask.shape[2]), key=lambda index: int(mask[:, :, index].sum()))
     coordinates = np.argwhere(mask[:, :, z] > 0)
+    # v2 (D-2026-08-16-01): the scribble is a central patch, not the whole
+    # slice, so Euclidean far-voxels (beyond 15 mm) exist and the COMPLETE
+    # states remain constructible.
+    if len(coordinates):
+        center = coordinates.mean(axis=0)
+        radius = 5.0
+        coordinates = coordinates[
+            np.linalg.norm(coordinates - center, axis=1) <= radius
+        ]
     result = [[int(x), int(y), int(z)] for x, y in coordinates]
     return result, True, len(result)
 
