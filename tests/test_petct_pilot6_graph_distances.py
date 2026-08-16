@@ -154,9 +154,9 @@ def test_matched_state_six_converts_rederivation_failure_to_ineligible(monkeypat
     rng = np.random.default_rng(5)
     gt = np.zeros((30, 30, 30), dtype=bool)
     for _ in range(4):
-        center = tuple(rng.integers(5, 25, size=3))
+        center = tuple(rng.integers(8, 22, size=3))
         zz, yy, xx = np.ogrid[:30, :30, :30]
-        gt |= ((zz - center[0]) ** 2 + (yy - center[1]) ** 2 + (xx - center[2]) ** 2) <= 9
+        gt |= ((zz - center[0]) ** 2 + (yy - center[1]) ** 2 + (xx - center[2]) ** 2) <= 49
     result = builder.build_matched_state_six(
         gt.astype(np.float32), np.zeros_like(gt, dtype=np.float32), gt,
         spacing_xy=(2.734, 2.734),
@@ -207,3 +207,65 @@ def test_visible_safe_receipt_strips_forbidden_fragments():
     assert "residual_sha256" not in safe
     assert safe["stage_order"] == ["a", "b"]
     _assert_visible_safe({"m0_provenance": {"materializer_receipt": safe}})
+
+
+def test_pilot6_v2_construction_derives_same_goals():
+    """D-2026-08-16-01 regression anchor: every Euclidean-anchored state
+    must re-derive to its own goal under the official rules."""
+    import sys
+    from pathlib import Path
+
+    SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+    from data.materialize_petct_pilot6_states_v2 import (
+        construct_pilot6_states_v2,
+        select_add_component,
+        select_remove_component,
+    )
+    from data.build_petct_scribble_dataset import derive_goal_and_authorized_target
+
+    spacing = (2.734, 2.734)  # 15 mm ~= 5.5 voxels; 50 mm^2 ~= 6.7 voxels
+    gt = np.zeros((40, 40, 40), dtype=bool)
+    # one large lesion, radius ~9 voxels (24.6 mm) so far-voxels exist
+    zz, yy, xx = np.ogrid[:40, :40, :40]
+    gt |= ((zz - 20) ** 2 + (yy - 20) ** 2 + (xx - 20) ** 2) <= 81
+    add_component, _ = select_add_component(gt, min_component_voxels=50)
+    remove_component = select_remove_component(
+        gt, add_component, shell_iterations=3, min_component_voxels=50
+    )
+    # scribbles: single voxels inside the masks on the largest axial slice
+    z_add = int(np.argmax(add_component.sum(axis=(0, 1))))
+    coords_add = np.argwhere(add_component[:, :, z_add] > 0)
+    scribble_add = [[int(c[0]), int(c[1]), z_add] for c in coords_add[:: max(1, len(coords_add) // 2)][:2]]
+    z_remove = int(np.argmax(remove_component.sum(axis=(0, 1))))
+    coords_remove = np.argwhere(remove_component[:, :, z_remove] > 0)
+    scribble_remove = [[int(c[0]), int(c[1]), z_remove] for c in coords_remove[:: max(1, len(coords_remove) // 2)][:2]]
+
+    v2 = construct_pilot6_states_v2(
+        gt,
+        add_component=add_component,
+        remove_component=remove_component,
+        scribble_add=scribble_add,
+        scribble_remove=scribble_remove,
+        spacing_xy=spacing,
+        local_radius_mm=15.0,
+        minimum_local_area_mm2=50.0,
+    )
+    assert v2["eligible"] is True
+    for goal, state in v2["states"].items():
+        operation = state["operation"]
+        scribble = scribble_add if operation == "ADD" else scribble_remove
+        actual_goal, authorized, _ = derive_goal_and_authorized_target(
+            gt=gt,
+            m0=state["m0"],
+            operation=operation,
+            coordinates_xyz=scribble,
+            spacing_xy=spacing,
+            local_radius_mm=15.0,
+            minimum_local_area_mm2=50.0,
+        )
+        assert actual_goal == goal, f"{goal} re-derived as {actual_goal}"
+        assert np.array_equal(
+            authorized > 0, state["authorized_target"] > 0
+        ), f"authorized mismatch for {goal}"

@@ -159,23 +159,42 @@ def build_matched_state_six(
 
     if learning_partition not in {"train", "val", "test"}:
         raise RuntimeError("learning_partition must be train, val, or test")
-    constructed = construct_pilot6_states(
-        pet,
-        ct,
-        gt,
-        split="development",
-        dataset_id=DATASET_ID,
+    # Euclidean scribble-anchored construction (D-2026-08-16-01): the v1
+    # graph-distance partition disagreed systematically with the official
+    # 15 mm / 50 mm^2 re-derivation (72.6% exclusion rate).  The official
+    # scribbles are now generated FIRST on the ADD (FN) and REMOVE (FP)
+    # masks, and every state mask is anchored to that Euclidean geometry, so
+    # construction and re-derivation share one source of truth.
+    from data.materialize_petct_pilot6_states_v2 import (
+        PILOT6_V2_SCHEMA,
+        Pilot6V2Error,
+        construct_pilot6_states_v2,
+        select_add_component,
+        select_remove_component,
     )
-    if not constructed["eligible"]:
+
+    from data.materialize_petct_pilot6_states import THRESHOLDS
+
+    try:
+        add_component, _ = select_add_component(
+            gt, min_component_voxels=int(THRESHOLDS["min_component_voxels"])
+        )
+        remove_component = select_remove_component(
+            gt,
+            add_component,
+            shell_iterations=int(THRESHOLDS["remove_shell_iterations"]),
+            min_component_voxels=int(THRESHOLDS["min_component_voxels"]),
+        )
+    except Pilot6V2Error as exc:
         return {
             "eligible": False,
-            "reason": "CONTROLLED_STATE_INELIGIBLE",
-            "receipt": constructed["receipt"],
+            "reason": f"CONTROLLED_STATE_INELIGIBLE:{exc}",
+            "receipt": {"schema_version": PILOT6_V2_SCHEMA, "status": "INELIGIBLE"},
         }
 
     scribbles = {
         operation: generate_residual_scribble(
-            constructed["scribble_supports"][operation],
+            add_component if operation == "ADD" else remove_component,
             operation=operation,
             strategy=strategy,
             simulator=simulator,
@@ -184,16 +203,31 @@ def build_matched_state_six(
         )
         for operation in ("ADD", "REMOVE")
     }
+    try:
+        v2 = construct_pilot6_states_v2(
+            gt,
+            add_component=add_component,
+            remove_component=remove_component,
+            scribble_add=scribbles["ADD"]["coordinates_xyz"],
+            scribble_remove=scribbles["REMOVE"]["coordinates_xyz"],
+            spacing_xy=spacing_xy,
+            local_radius_mm=local_radius_mm,
+            minimum_local_area_mm2=minimum_local_area_mm2,
+        )
+    except Pilot6V2Error as exc:
+        return {
+            "eligible": False,
+            "reason": f"CONTROLLED_STATE_INELIGIBLE:{exc}",
+            "receipt": {"schema_version": PILOT6_V2_SCHEMA, "status": "INELIGIBLE"},
+        }
     states: dict[str, dict[str, Any]] = {}
     for expected_goal in GOALS:
         operation = expected_goal.split("_", 1)[0]
         scribble = scribbles[operation]
-        state = constructed["states"][expected_goal]
-        # The constructed six states are proposals; the official re-derivation
-        # (Euclidean 15 mm radius + 50 mm^2 minimum area) is the binding check.
-        # A semantic re-derivation failure is a counted exclusion, not a
-        # system fault: the run must not fail closed on a boundary case whose
-        # construction/derivation radii disagree (2026-08-16 R4 fix).
+        state = v2["states"][expected_goal]
+        # Same-source-of-truth insurance: with the Euclidean anchor the
+        # re-derivation must always agree; a mismatch here is a system bug
+        # and still fails closed.
         try:
             actual_goal, authorized, target_stats = derive_goal_and_authorized_target(
                 gt=gt,
@@ -207,19 +241,15 @@ def build_matched_state_six(
         except RuntimeError as exc:
             return {
                 "eligible": False,
-                "reason": (
-                    f"STATE_REDERIVATION_FAILED:{expected_goal}:{exc}"
-                ),
-                "receipt": constructed["receipt"],
+                "reason": f"STATE_REDERIVATION_FAILED:{expected_goal}:{exc}",
+                "receipt": {"schema_version": PILOT6_V2_SCHEMA, "status": "INELIGIBLE"},
                 "scribbles": scribbles,
             }
         if actual_goal != expected_goal:
             return {
                 "eligible": False,
-                "reason": (
-                    f"STATE_RELATIVE_GOAL_MISMATCH:{expected_goal}->{actual_goal}"
-                ),
-                "receipt": constructed["receipt"],
+                "reason": f"STATE_RELATIVE_GOAL_MISMATCH:{expected_goal}->{actual_goal}",
+                "receipt": {"schema_version": PILOT6_V2_SCHEMA, "status": "INELIGIBLE"},
                 "scribbles": scribbles,
             }
         states[expected_goal] = {
@@ -241,9 +271,9 @@ def build_matched_state_six(
         "states": states,
         "receipt": {
             "schema_version": MATCHED_STATE_SCHEMA,
+            "constructor_schema_version": PILOT6_V2_SCHEMA,
             "status": "ELIGIBLE",
             "learning_partition": learning_partition,
-            "candidate_state_constructor_receipt": constructed["receipt"],
             "stage_order": list(CONTROLLED_STAGE_ORDER),
             "shared_physical_scribble_within_operation": True,
             "shared_physical_scribble_across_operations": False,
