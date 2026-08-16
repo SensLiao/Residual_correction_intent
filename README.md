@@ -42,10 +42,11 @@ Constrained residual editor (13 channels incl. central selected component)
 M_{k+1}
 ```
 
-Two data lanes are kept physically separate: an **inference-visible** lane
-(PET/CT crops, current mask, cue, component descriptors) and a
-**label/evaluator** lane (GT, residuals, reference programs, pointer targets).
-The model loader cannot read the label lane.
+Three data lanes are kept physically separate: an **inference-visible** lane
+(PET/CT crops, current mask, cue, component descriptors), a **label-only**
+training lane, and an **evaluation/audit-only** lane. Inference first writes an
+immutable prediction artifact; an independent evaluator joins predictions to
+labels afterwards. The inference loader cannot read either privileged lane.
 
 ## Repository layout
 
@@ -68,11 +69,39 @@ protocols/  autoPET V protocol runtime manifest
 
 - v2 (six-class intent ontology + 12-channel editor) is **frozen** and stays
   byte-identical; it is the legacy baseline.
-- v3 (SCEP: State-Conditioned Executable Correction Programs) code is ready;
-  experiments (J0-J9) are pending the controlled matched-state corpus receipt.
+- v3 (SCEP: State-Conditioned Executable Correction Programs) is an audited
+  implementation candidate. J0-J9 remain blocked until a newly materialized
+  train/validation corpus passes its independent, content-bound receipt; this
+  repository asserts no J-series result.
 - Data and model weights are **not** included. The dataset is the public
   PSMA-PET/CT whole-body collection (Jeblick et al., Scientific Data 2026);
   the official interactive protocol follows autoPET V.
+
+## Reproducibility and evaluation guardrails
+
+- Splits are patient-disjoint and frozen before training. Locked test images
+  are inaccessible without a separate, recorded authorization receipt.
+- The primary closed loop advances with the model's actual previous output.
+  Teacher-forced correction is reported only as an oracle/conditional ceiling.
+- Main-arm comparisons must use the same folds, checkpoint rule, initial mask,
+  interaction budget, and patient-clustered uncertainty estimator.
+- Undefined patient-by-class metric cells remain undefined and are excluded
+  with their support reported; they are never converted into perfect scores.
+- Novelty claims are limited to the tested combination of same-operation
+  matched-state supervision, object-grounded legal programs, and
+  intervention-backed evidence. The code alone does not establish clinical
+  safety, superiority, or a field-first claim.
+
+Run the canonical source-only test collection from the repository root:
+
+```bash
+python -m pytest -q tests
+python -m ruff check scripts tests
+```
+
+The schema tests require `jsonschema==4.25.1`. Tests that exercise licensed
+checkpoints, vendored upstream repositories, or private runtime assets are
+environment-gated and are not evidence of model performance.
 
 ## Citation
 

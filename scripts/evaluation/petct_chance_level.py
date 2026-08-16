@@ -6,15 +6,17 @@ joint goals.  A bare score such as 0.76 is uninterpretable without the floor a
 trivial predictor already reaches, so this module scores several *non-model*
 policies with the exact same metric function the evaluator uses.
 
-Every baseline is reported twice:
+Every baseline is reported with:
 
-* analytically, as the ratio-of-expectations plug-in value (asymptotic in the
-  number of episodes), and
-* by Monte Carlo, by drawing predictions and calling
-  ``patient_balanced_macro_f1`` itself.
+* a D14 estimate obtained by drawing predictions and calling
+  ``patient_balanced_macro_f1`` itself (the chance floor used for decisions),
+  with a simulation interval; and
+* a pooled ratio-of-expectations reference kept only as a diagnostic.
 
-The two disagree slightly for stochastic policies because E[ratio] != ratio of
-E; that gap is finite-sample bias and is reported rather than hidden.
+The pooled reference is not the D14 estimand: patient×class F1 is nonlinear,
+undefined cells are skipped, and a class prior cannot encode the per-patient
+class composition.  The two values must therefore never be substituted for
+one another.
 
 This module reads no image, mask, or patient record.  It needs only the gold
 class distribution.
@@ -202,13 +204,14 @@ def is_deterministic(policy: Policy) -> bool:
 
 
 def analytic_macro_f1(prior: Sequence[float], policy: Policy) -> float:
-    """Plug-in macro-F1 of a policy whose choice depends only on the gold class.
+    """Pooled asymptotic diagnostic; explicitly *not* the D14 chance floor.
 
     With weighted gold mass ``p`` and row-stochastic ``Q[gold][pred]`` the
     expected weighted confusion mass of class ``c`` is
     ``tp = p_c*Q[c][c]``, ``fp = sum_{g!=c} p_g*Q[g][c]``,
-    ``fn = p_c*(1-Q[c][c])``.  The zero-division rule mirrors
-    ``patient_balanced_macro_f1``: an empty denominator scores 0.0.
+    ``fn = p_c*(1-Q[c][c])``. Undefined aggregate classes are skipped, as
+    D14 skips undefined patient×class cells, but the remaining pooled ratios
+    still cannot recover patient-level nonlinear averaging from a class prior.
     """
 
     _validate_policy(policy)
@@ -225,7 +228,10 @@ def analytic_macro_f1(prior: Sequence[float], policy: Policy) -> float:
         )
         fn = prior[class_id] * (1.0 - hit_rate)
         denom = 2.0 * tp + fp + fn
-        scores.append(0.0 if denom == 0 else 2.0 * tp / denom)
+        if denom:
+            scores.append(2.0 * tp / denom)
+    if not scores:
+        raise ChanceLevelError("pooled reference has no defined class")
     return float(np.mean(scores))
 
 
@@ -326,28 +332,28 @@ def baseline_table(
     prior = weighted_prior(population)
     rows: List[Dict[str, object]] = []
     for name, description, policy in _named_policies(prior):
-        analytic = analytic_macro_f1(prior, policy)
+        pooled_reference = analytic_macro_f1(prior, policy)
         simulated = monte_carlo_macro_f1(population, policy, seed=seed, repeats=repeats)
         rows.append(
             {
                 "baseline": name,
                 "description": description,
-                "analytic_macro_f1": analytic,
-                "monte_carlo_mean": simulated["mean"],
-                "monte_carlo_std": simulated["std"],
-                "monte_carlo_ci_low": simulated["ci_low"],
-                "monte_carlo_ci_high": simulated["ci_high"],
-                "analytic_minus_monte_carlo": analytic - float(simulated["mean"]),
+                "d14_chance_estimate": simulated["mean"],
+                "d14_simulation_std": simulated["std"],
+                "d14_simulation_ci_low": simulated["ci_low"],
+                "d14_simulation_ci_high": simulated["ci_high"],
+                "pooled_asymptotic_reference_not_d14": pooled_reference,
+                "pooled_minus_d14_estimate": pooled_reference - float(simulated["mean"]),
                 "repeats": simulated["repeats"],
                 "deterministic": simulated["deterministic"],
-                "usable_range": [analytic, 1.0],
+                "usable_range": [simulated["mean"], 1.0],
             }
         )
     return rows
 
 
 def zero_division_cost_probe() -> Dict[str, object]:
-    """Measure what one dead class costs, using the real metric function."""
+    """Record D14's supported-cell convention with the real metric."""
 
     present = build_population((1, 1, 1, 1, 1, 0))
     perfect_with_one_absent = patient_balanced_macro_f1(
@@ -360,16 +366,15 @@ def zero_division_cost_probe() -> Dict[str, object]:
         full.gold, confused, full.patients, CLASS_LABELS
     )
     return {
-        "rule": "F1_c = 0.0 when 2*tp+fp+fn == 0, i.e. class absent from gold and predictions",
-        "max_macro_f1_cost_of_one_zeroed_class": 1.0 / CLASS_COUNT,
+        "rule": "patient×class cells with 2*tp+fp+fn == 0 are undefined and skipped; class support is reported",
+        "cost_of_globally_absent_undefined_class": 0.0,
         "measured_perfect_score_with_one_class_absent": perfect_with_one_absent,
         "measured_cost_of_that_absent_class": 1.0 - perfect_with_one_absent,
         "measured_score_when_one_class_is_folded_into_another": confusion_score,
         "measured_cost_of_that_confusion": 1.0 - confusion_score,
         "note": (
-            "1/6 is the isolated arithmetic cost of driving one class term from "
-            "1.0 to 0.0; a real confusion costs more because it also damages the "
-            "class the mass is dumped into"
+            "A genuinely absent class is not imputed as perfect or zero. A real "
+            "confusion remains defined through FN/FP cells and is penalized."
         ),
     }
 
@@ -394,7 +399,7 @@ def build_report(
 ) -> Dict[str, object]:
     prior = weighted_prior(population)
     baselines = baseline_table(population, seed=seed, repeats=repeats)
-    floors = {row["baseline"]: float(row["analytic_macro_f1"]) for row in baselines}
+    floors = {row["baseline"]: float(row["d14_chance_estimate"]) for row in baselines}
     observed_rows = [
         {
             "label": label,
@@ -426,6 +431,10 @@ def build_report(
         "seed": int(seed),
         "repeats": int(repeats),
         "baselines": baselines,
+        "chance_floor_rule": (
+            "Use d14_chance_estimate/interval from the real patient-balanced scorer; "
+            "pooled_asymptotic_reference_not_d14 is diagnostic only."
+        ),
         "zero_division_convention": zero_division_cost_probe(),
         "observed": observed_rows,
     }
@@ -444,7 +453,7 @@ def _render_text(report: Mapping[str, object]) -> str:
         "weighting   : %s" % population["weighting"],
         "seed/repeats: %s / %s" % (report["seed"], report["repeats"]),
         "",
-        "%-38s %10s %10s %10s %8s" % ("baseline", "analytic", "mc_mean", "mc_std", "det"),
+        "%-38s %10s %10s %10s %8s" % ("baseline", "d14", "pooled", "sim_std", "det"),
         "-" * 80,
     ]
     for row in report["baselines"]:
@@ -452,9 +461,9 @@ def _render_text(report: Mapping[str, object]) -> str:
             "%-38s %10.4f %10.4f %10.4f %8s"
             % (
                 row["baseline"],
-                row["analytic_macro_f1"],
-                row["monte_carlo_mean"],
-                row["monte_carlo_std"],
+                row["d14_chance_estimate"],
+                row["pooled_asymptotic_reference_not_d14"],
+                row["d14_simulation_std"],
                 "yes" if row["deterministic"] else "no",
             )
         )
@@ -472,9 +481,9 @@ def _render_text(report: Mapping[str, object]) -> str:
     lines.extend(
         [
             "",
-            "one dead class costs at most %.4f macro-F1 (measured %.4f)"
+            "one globally absent undefined class costs %.4f macro-F1 (measured %.4f)"
             % (
-                convention["max_macro_f1_cost_of_one_zeroed_class"],
+                convention["cost_of_globally_absent_undefined_class"],
                 convention["measured_cost_of_that_absent_class"],
             ),
         ]

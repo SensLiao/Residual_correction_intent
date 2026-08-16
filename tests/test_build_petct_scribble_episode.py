@@ -14,6 +14,7 @@ from data.build_petct_scribble_episode import (  # noqa: E402
     CUE_ELIGIBILITY_RULE,
     EpisodeContractError,
     ResidualCueIneligibleError,
+    _assert_visible_safe,
     build_episode_documents,
     canonical_intent_frame,
     compute_fn_residual,
@@ -209,6 +210,99 @@ def test_visible_and_evaluation_outputs_are_disjoint_and_no_clobber(tmp_path: Pa
             evaluation,
             visible_root=tmp_path / "visible",
             eval_root=tmp_path / "evaluation",
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"goal": "opaque"},
+        {"neutral": "gold supervision"},
+        {"neutral": "label=2"},
+        {"neutral": "evaluation/episode.json"},
+        {"neutral": "authorized-target.nii.gz"},
+        {"nested": [{"neutral": "safe"}, "folder/goal/file.npz"]},
+    ],
+)
+def test_visible_firewall_rejects_forbidden_keys_values_and_paths(payload) -> None:
+    with pytest.raises(EpisodeContractError, match="forbidden evaluation"):
+        _assert_visible_safe(payload)
+
+
+@pytest.mark.parametrize("goal", LEGAL_JOINT_GOALS)
+def test_visible_firewall_rejects_every_six_class_goal_value(goal: str) -> None:
+    with pytest.raises(EpisodeContractError, match="forbidden evaluation value"):
+        _assert_visible_safe({"opaque_metadata": goal})
+
+
+def test_visible_provenance_is_allowlisted_but_evaluation_keeps_audit_trace() -> None:
+    scribble = generate_residual_scribble(
+        np.ones((4, 4, 1), dtype=np.uint8),
+        operation="ADD",
+        strategy="random",
+        simulator=_simulator,
+        upstream_commit="abc",
+    )
+    provenance = {
+        "kind": "controlled_matched_state",
+        "schema_version": "PETCT-P2T-MATCHED-STATE-v2.0",
+        "operation": "ADD",
+        "state_content_sha256": "c" * 64,
+        "cue_coordinate_sha256": "d" * 64,
+        "attempt_id": "audit-attempt",
+        "matched_state_group_id": "matched-audit-only",
+        "goal": "ADD_SAME_LOCAL",
+        "state_path": "audit/matched-audit-only/ADD_SAME_LOCAL/m0.nii.gz",
+        "materializer_receipt": {"matched_goals": list(LEGAL_JOINT_GOALS)},
+    }
+    visible, evaluation = build_episode_documents(
+        episode_id="petct-0123456789abcdef01234567",
+        lane="controlled",
+        patient_group_hash="a" * 64,
+        montage_reference="learning-visible/petct-0123456789abcdef01234567.npz",
+        m0_provenance=provenance,
+        scribble_record=scribble,
+        source_case_id="hidden-case",
+        source_patient_id="hidden-patient",
+        residual_sha256="b" * 64,
+        residual_voxels=16,
+        gold_intent=canonical_intent_frame("ADD_SAME_LOCAL"),
+    )
+    assert visible["m0_provenance"] == {
+        "kind": "controlled_matched_state",
+        "schema_version": "PETCT-P2T-MATCHED-STATE-v2.0",
+        "operation": "ADD",
+        "state_content_sha256": "c" * 64,
+        "cue_coordinate_sha256": "d" * 64,
+    }
+    visible_text = str(visible).casefold()
+    assert "add_same_local" not in visible_text
+    assert "matched_state_group_id" not in visible_text
+    assert "state_path" not in visible_text
+    assert evaluation["m0_provenance"] == provenance
+
+
+def test_visible_rejects_goal_derived_montage_filename() -> None:
+    scribble = generate_residual_scribble(
+        np.ones((4, 4, 1), dtype=np.uint8),
+        operation="ADD",
+        strategy="random",
+        simulator=_simulator,
+        upstream_commit="abc",
+    )
+    with pytest.raises(EpisodeContractError, match="forbidden evaluation value"):
+        build_episode_documents(
+            episode_id="petct-0123456789abcdef01234567",
+            lane="controlled",
+            patient_group_hash="a" * 64,
+            montage_reference="visible/ADD_SAME_LOCAL/input.npz",
+            m0_provenance={"kind": "controlled"},
+            scribble_record=scribble,
+            source_case_id="hidden-case",
+            source_patient_id="hidden-patient",
+            residual_sha256="b" * 64,
+            residual_voxels=16,
+            gold_intent=canonical_intent_frame("ADD_SAME_LOCAL"),
         )
 
 

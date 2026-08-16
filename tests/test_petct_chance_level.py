@@ -39,8 +39,9 @@ def _independent_analytic(prior, policy):
         fp = sum(prior[g] * policy[g][c] for g in range(6) if g != c)
         fn = prior[c] * (1.0 - policy[c][c])
         denom = 2.0 * tp + fp + fn
-        scores.append(0.0 if denom == 0 else 2.0 * tp / denom)
-    return sum(scores) / 6.0
+        if denom:
+            scores.append(2.0 * tp / denom)
+    return sum(scores) / len(scores)
 
 
 def test_module_reuses_the_exact_primary_metric_function() -> None:
@@ -73,15 +74,15 @@ def test_perfect_prediction_scores_one_on_the_primary_metric() -> None:
     ) == pytest.approx(1.0)
 
 
-def test_a_class_absent_from_gold_and_prediction_costs_exactly_one_sixth() -> None:
-    """Quantifies the zero-division convention: absent class contributes 0.0."""
+def test_a_class_absent_from_gold_and_prediction_is_undefined_and_skipped() -> None:
+    """D14 does not invent a perfect or zero score for an unsupported class."""
 
     population = chance.build_population((1, 1, 1, 1, 1, 0))
     score = patient_balanced_macro_f1(
         population.gold, population.gold, population.patients, list(range(6))
     )
-    assert score == pytest.approx(5.0 / 6.0)
-    assert 1.0 - score == pytest.approx(ONE_SIXTH)
+    assert score == pytest.approx(1.0)
+    assert 1.0 - score == pytest.approx(0.0)
 
 
 def test_zeroing_one_class_by_confusion_costs_more_than_one_sixth() -> None:
@@ -93,21 +94,23 @@ def test_zeroing_one_class_by_confusion_costs_more_than_one_sixth() -> None:
     score = patient_balanced_macro_f1(
         population.gold, predictions, population.patients, list(range(6))
     )
-    # class 5 -> 0.0 (costs 1/6), class 4 -> 2/3 (costs a further 1/18)
-    assert score == pytest.approx((4.0 + 2.0 / 3.0) / 6.0)
-    assert 1.0 - score == pytest.approx(ONE_SIXTH + (1.0 / 3.0) / 6.0)
+    # With one synthetic patient per episode, class 4 is defined for the
+    # correct and false-positive patients separately: mean (1 + 0) / 2.
+    assert score == pytest.approx(0.75)
+    assert 1.0 - score == pytest.approx(0.25)
 
 
-def test_constant_class_baseline_matches_hand_computation() -> None:
+def test_constant_class_baseline_distinguishes_d14_from_pooled_reference() -> None:
     population = chance.build_population((2, 1, 1, 0, 0, 0))
     policy = chance.constant_class_policy(0)
     prior = chance.weighted_prior(population)
-    # tp=2 fp=2 fn=0 -> F1_0 = 4/6; classes 1,2 -> 0; classes 3,4,5 -> 0 (absent).
-    expected = (2.0 / 3.0) / 6.0
-    assert chance.analytic_macro_f1(prior, policy) == pytest.approx(expected)
+    # Pooled diagnostic: class 0 F1=2/3 and classes 1,2 are zero; unsupported
+    # classes are skipped, hence (2/3)/3=2/9. D14 instead averages patient F1
+    # within each supported class and is exactly 1/6 for this population.
+    assert chance.analytic_macro_f1(prior, policy) == pytest.approx(2.0 / 9.0)
     assert chance.monte_carlo_macro_f1(population, policy, seed=1, repeats=1)[
         "mean"
-    ] == pytest.approx(expected)
+    ] == pytest.approx(ONE_SIXTH)
 
 
 def test_prior_matched_random_is_exactly_one_sixth_for_any_prior() -> None:
@@ -136,8 +139,8 @@ def test_no_class_independent_random_policy_can_beat_one_sixth() -> None:
         assert chance.analytic_macro_f1(prior, policy) <= ONE_SIXTH + 1e-12
 
 
-def test_analytic_matches_the_primary_metric_for_deterministic_policies() -> None:
-    """Bridges the closed form to the real scorer on an unbalanced population."""
+def test_d14_deterministic_floor_is_scored_by_the_real_metric() -> None:
+    """A class prior cannot reconstruct the nonlinear patient-level estimand."""
 
     composition = {
         "patient_a": {"ADD_SAME_LOCAL": 3, "REMOVE_NEW_COMPLETE": 1},
@@ -147,6 +150,7 @@ def test_analytic_matches_the_primary_metric_for_deterministic_policies() -> Non
     }
     population = chance.build_population(None, patient_composition=composition)
     prior = chance.weighted_prior(population)
+    observed_gap = False
     for class_id in range(6):
         policy = chance.constant_class_policy(class_id)
         measured = patient_balanced_macro_f1(
@@ -155,7 +159,14 @@ def test_analytic_matches_the_primary_metric_for_deterministic_policies() -> Non
             population.patients,
             list(range(6)),
         )
-        assert chance.analytic_macro_f1(prior, policy) == pytest.approx(measured)
+        simulated = chance.monte_carlo_macro_f1(
+            population, policy, seed=20260806, repeats=100
+        )
+        assert simulated["mean"] == pytest.approx(measured)
+        observed_gap |= chance.analytic_macro_f1(prior, policy) != pytest.approx(
+            measured
+        )
+    assert observed_gap
 
 
 def test_weighted_prior_is_patient_balanced_not_episode_balanced() -> None:
@@ -184,7 +195,7 @@ def test_monte_carlo_is_reproducible_under_a_fixed_seed() -> None:
     assert left["seed"] == 20260806
 
 
-def test_monte_carlo_agrees_with_the_analytic_uniform_baseline() -> None:
+def test_uniform_d14_floor_is_reproducible_and_keeps_pooled_gap_explicit() -> None:
     population = chance.build_population(TRAIN_PLUS_VAL_COUNTS)
     prior = chance.weighted_prior(population)
     policy = chance.uniform_policy()
@@ -192,7 +203,14 @@ def test_monte_carlo_agrees_with_the_analytic_uniform_baseline() -> None:
     simulated = chance.monte_carlo_macro_f1(
         population, policy, seed=20260806, repeats=300
     )
-    assert simulated["mean"] == pytest.approx(analytic, abs=0.01)
+    repeated = chance.monte_carlo_macro_f1(
+        population, policy, seed=20260806, repeats=300
+    )
+    assert simulated == repeated
+    assert simulated["ci_low"] <= simulated["mean"] <= simulated["ci_high"]
+    # This is deliberate: the pooled ratio-of-expectations is only a
+    # diagnostic and must not be substituted for the D14 chance floor.
+    assert abs(float(simulated["mean"]) - analytic) > 0.01
 
 
 def test_operation_oracle_uses_only_the_operation_and_beats_uniform() -> None:
@@ -251,15 +269,18 @@ def test_baseline_table_covers_every_required_reference_arm() -> None:
     for row in rows:
         assert set(row) >= {
             "baseline",
-            "analytic_macro_f1",
-            "monte_carlo_mean",
-            "monte_carlo_std",
+            "d14_chance_estimate",
+            "d14_simulation_std",
+            "d14_simulation_ci_low",
+            "d14_simulation_ci_high",
+            "pooled_asymptotic_reference_not_d14",
+            "pooled_minus_d14_estimate",
             "repeats",
             "deterministic",
         }
-        assert row["analytic_macro_f1"] == pytest.approx(
-            row["monte_carlo_mean"], abs=0.05
-        )
+        assert row["d14_simulation_ci_low"] <= row["d14_chance_estimate"]
+        assert row["d14_chance_estimate"] <= row["d14_simulation_ci_high"]
+        assert row["usable_range"][0] == row["d14_chance_estimate"]
 
 
 def test_cli_emits_a_json_report_with_ranges_for_observed_scores(capsys) -> None:
@@ -290,6 +311,7 @@ def test_cli_emits_a_json_report_with_ranges_for_observed_scores(capsys) -> None
     assert report["population"]["label"] == "val"
     assert report["population"]["episode_count"] == 125
     assert report["metric"].endswith("patient_balanced_macro_f1")
+    assert "d14_chance_estimate" in report["chance_floor_rule"]
     # 4 named policies + one row per constant class
     assert len(report["baselines"]) == 10
     observed = {row["label"]: row for row in report["observed"]}

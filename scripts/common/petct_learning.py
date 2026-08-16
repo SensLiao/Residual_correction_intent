@@ -19,7 +19,6 @@ from torch.utils.data import Dataset
 
 from common.petct_models import (
     EDITOR_PRIMARY_ARCHITECTURE_ID,
-    FUSION_MODES,
     OPERATION_TO_ID,
     TARGET_TO_ID,
     SCOPE_TO_ID,
@@ -959,34 +958,90 @@ def legal_joint_ids(operation: Tensor, target: Tensor, scope: Tensor) -> Tensor:
     return joint
 
 
+def patient_balanced_macro_f1_summary(
+    y_true: Sequence[int],
+    y_pred: Sequence[int],
+    patient_ids: Sequence[str],
+    labels: Sequence[int],
+) -> Dict[str, Any]:
+    """Return the D-2026-08-14-04 patient-balanced macro-F1 estimand.
+
+    Confusion counts are pooled within each patient and class before F1 is
+    computed.  Undefined patient/class cells (``2*TP + FP + FN == 0``) are
+    skipped.  Defined patient F1 values are averaged equally within each
+    class, then defined class means are averaged equally.  The support for a
+    class is therefore the number of patients with a defined F1 for it.
+    """
+
+    if not (len(y_true) == len(y_pred) == len(patient_ids)) or len(y_true) == 0:
+        raise LearningContractError("metric vectors must be non-empty and aligned")
+    label_values = [int(label) for label in labels]
+    if not label_values or len(set(label_values)) != len(label_values):
+        raise LearningContractError("metric labels must be non-empty and unique")
+    allowed = set(label_values)
+    truth = [int(value) for value in y_true]
+    prediction = [int(value) for value in y_pred]
+    if any(value not in allowed for value in truth + prediction):
+        raise LearningContractError("metric vectors contain a label outside labels")
+
+    grouped: Dict[str, List[int]] = {}
+    for index, patient in enumerate(patient_ids):
+        grouped.setdefault(str(patient), []).append(index)
+
+    per_class_f1: Dict[str, Optional[float]] = {}
+    per_class_support: Dict[str, int] = {}
+    defined_class_scores: List[float] = []
+    for label in label_values:
+        patient_scores: List[float] = []
+        for indices in grouped.values():
+            tp = sum(
+                truth[index] == label and prediction[index] == label
+                for index in indices
+            )
+            fp = sum(
+                truth[index] != label and prediction[index] == label
+                for index in indices
+            )
+            fn = sum(
+                truth[index] == label and prediction[index] != label
+                for index in indices
+            )
+            denom = 2 * tp + fp + fn
+            if denom > 0:
+                patient_scores.append(2.0 * tp / denom)
+        key = str(label)
+        per_class_support[key] = len(patient_scores)
+        if patient_scores:
+            class_score = float(np.mean(patient_scores))
+            per_class_f1[key] = class_score
+            defined_class_scores.append(class_score)
+        else:
+            per_class_f1[key] = None
+
+    if not defined_class_scores:
+        raise LearningContractError("metric has no defined patient/class cells")
+    return {
+        "estimate": float(np.mean(defined_class_scores)),
+        "patient_count": len(grouped),
+        "defined_class_count": len(defined_class_scores),
+        "per_class_f1": per_class_f1,
+        "per_class_support": per_class_support,
+    }
+
+
 def patient_balanced_macro_f1(
     y_true: Sequence[int],
     y_pred: Sequence[int],
     patient_ids: Sequence[str],
     labels: Sequence[int],
 ) -> float:
-    """Macro-F1 where every patient contributes equal total weight."""
+    """Return the D14 score while preserving the historical scalar API."""
 
-    if not (len(y_true) == len(y_pred) == len(patient_ids)) or not y_true:
-        raise LearningContractError("metric vectors must be non-empty and aligned")
-    counts: Dict[str, int] = {}
-    for patient in patient_ids:
-        counts[str(patient)] = counts.get(str(patient), 0) + 1
-    weights = [1.0 / counts[str(patient)] for patient in patient_ids]
-    scores = []
-    for label in labels:
-        tp = sum(
-            w for t, p, w in zip(y_true, y_pred, weights) if t == label and p == label
-        )
-        fp = sum(
-            w for t, p, w in zip(y_true, y_pred, weights) if t != label and p == label
-        )
-        fn = sum(
-            w for t, p, w in zip(y_true, y_pred, weights) if t == label and p != label
-        )
-        denom = 2.0 * tp + fp + fn
-        scores.append(0.0 if denom == 0 else 2.0 * tp / denom)
-    return float(np.mean(scores))
+    return float(
+        patient_balanced_macro_f1_summary(y_true, y_pred, patient_ids, labels)[
+            "estimate"
+        ]
+    )
 
 
 def patient_cluster_bootstrap_macro_f1(
@@ -998,7 +1053,10 @@ def patient_cluster_bootstrap_macro_f1(
     seed: int,
     samples: int,
     alpha: float = 0.05,
-) -> Dict[str, float]:
+) -> Dict[str, Any]:
+    point_summary = patient_balanced_macro_f1_summary(
+        y_true, y_pred, patient_ids, labels
+    )
     grouped: Dict[str, List[int]] = {}
     for index, patient in enumerate(patient_ids):
         grouped.setdefault(str(patient), []).append(index)
@@ -1020,14 +1078,16 @@ def patient_cluster_bootstrap_macro_f1(
         draws.append(
             patient_balanced_macro_f1(truth, prediction, synthetic_patients, labels)
         )
-    point = patient_balanced_macro_f1(y_true, y_pred, patient_ids, labels)
     return {
-        "estimate": point,
+        "estimate": point_summary["estimate"],
         "ci_low": float(np.quantile(draws, alpha / 2)),
         "ci_high": float(np.quantile(draws, 1 - alpha / 2)),
         "patient_count": float(len(patients)),
         "bootstrap_samples": float(samples),
         "seed": float(seed),
+        "defined_class_count": point_summary["defined_class_count"],
+        "per_class_f1": point_summary["per_class_f1"],
+        "per_class_support": point_summary["per_class_support"],
     }
 
 

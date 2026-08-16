@@ -152,3 +152,32 @@ def test_predicted_wrong_operation_is_valid_execution_but_fails_target_safety() 
     assert metrics["target_operation_safety_pass"] == 0.0
     assert metrics["authorized_remove_recall"] == 0.0
     assert metrics["unauthorized_addition_voxels"] == 1.0
+
+
+def test_voxelwise_error_volumes_are_explicitly_raw_not_official_fpv_fnv() -> None:
+    gt = np.zeros((3, 3, 3), dtype=np.uint8)
+    gt[0, 0, 0] = 1
+    gt[1, 1, 1] = 1
+    m0 = np.zeros_like(gt)
+    m0[0, 0, 0] = 1
+    m0[2, 2, 2] = 1
+    authorized = np.zeros_like(gt)
+    authorized[1, 1, 1] = 1
+    m1 = m0 | authorized
+
+    metrics = bidirectional_correction_metrics(
+        gt=gt,
+        m0=m0,
+        m1=m1,
+        authorized_target=authorized,
+        cue_support=authorized,
+        operation="ADD",
+        scope="LOCAL",
+        spacing_xyz=(1.0, 1.0, 1.0),
+        distal_radius_mm=0.0,
+    )
+
+    assert metrics["raw_voxel_fp_volume_ml"] == pytest.approx(0.001)
+    assert metrics["raw_voxel_fn_volume_ml"] == pytest.approx(0.0)
+    assert "fpv_ml" not in metrics
+    assert "fnv_ml" not in metrics

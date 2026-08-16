@@ -1,8 +1,24 @@
 from pathlib import Path
 import hashlib
 
+import pytest
+
 
 PROJECT = Path(__file__).resolve().parents[1]
+
+
+def _autopetv_runtime_root_or_skip() -> Path:
+    candidates = (
+        PROJECT / "external_runners" / "autopetv_protocol",
+        PROJECT / "upstream" / "autoPETV",
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    pytest.skip(
+        "requires the pinned autoPETV minimal runtime or upstream checkout; "
+        "neither vendor asset directory is present"
+    )
 
 
 def test_core_environment_pins_cc3d_and_preflights_official_autopet_modules() -> None:
@@ -80,9 +96,16 @@ def test_autopetv_runtime_manifest_is_the_three_file_minimal_package() -> None:
     }
     assert "checkpoint" not in manifest
 
-    runtime_root = PROJECT / "external_runners" / "autopetv_protocol"
-    if not runtime_root.is_dir():
-        runtime_root = PROJECT / "upstream" / "autoPETV"
+
+def test_autopetv_runtime_files_match_the_frozen_manifest_when_available() -> None:
+    import json
+
+    manifest = json.loads(
+        (PROJECT / "protocols/autopetv_protocol_runtime.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    runtime_root = _autopetv_runtime_root_or_skip()
     for record in manifest["files"]:
         path = runtime_root / record["path"]
         assert path.is_file() and not path.is_symlink()
