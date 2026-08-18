@@ -42,6 +42,7 @@ from common.petct_program_learning import (  # noqa: E402
     multi_positive_pointer_loss,
 )
 from common.petct_program_models import (  # noqa: E402
+    LegalCallCompiler,
     ProgramCompilerNet,
     ProgramEditorUNet2D,
     ProgramEmbedding,
@@ -275,6 +276,27 @@ def test_label_manifest_rejects_six_rows_mixed_across_signed_operations(
 
 
 # ------------------------------------------------------------------ models
+
+
+def test_legal_compiler_forces_add_new_when_no_existing_component_exists():
+    compiler = LegalCallCompiler()
+
+    compiled = compiler(
+        "ADD",
+        torch.tensor([9.0, 1.0, 0.0]),
+        pointer_probs=None,
+        components=[],
+    )
+
+    assert compiled["call"] == {
+        "grammar_version": GRAMMAR_VERSION,
+        "operation": "ADD",
+        "family": "CREATE_NEW",
+        "operand": NEW_CUE_SENTINEL,
+    }
+    assert compiled["typed_trace"][2]["eligible_families"] == ["CREATE_NEW"]
+    assert compiled["typed_trace"][2]["selection_scores"] == [None, None, 0.0]
+    json.dumps(compiled, allow_nan=False)
 
 
 def test_program_embedding_null_is_exact_zero():

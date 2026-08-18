@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+echo "HISTORICAL_ONLY: D3 generation is deprecated by the R13/M0-v6 cutover." >&2
+exit 64
+
 P=/mnt/HDD4/zlei0805/honor_degree/projects/petct_textual_intent
 PY="$P/envs/petct_nnunet_v281/bin/python"
 RUN="$P/route_a/runs/PETCT-LEGACY-M0-D123-20260809-R3"

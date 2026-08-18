@@ -23,6 +23,7 @@ from common.petct_learning import (  # noqa: E402
     P2T_METRICS_SCHEMA,
     P2T_PREDICTION_SCHEMA,
     confusion_matrix_diagnostic,
+    decode_flat_baseline,
     encode_json,
     encode_jsonl,
     load_experiment_config,
@@ -52,6 +53,10 @@ from common.petct_test_access import (  # noqa: E402
     TestAccessError,
     add_leaf_test_access_arguments,
     enforce_partition_access,
+)
+from common.petct_mainline_lineage import (  # noqa: E402
+    LineageContractError,
+    validate_r13_data_ready,
 )
 
 
@@ -211,6 +216,7 @@ def main() -> int:
     parser.add_argument("--experiment-config", type=Path, required=True)
     parser.add_argument("--learning-split", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--r13-data-ready", type=Path, required=True)
     parser.add_argument("--partition", choices=["val", "test"], required=True)
     parser.add_argument("--predictions", type=Path, required=True)
     parser.add_argument(
@@ -244,9 +250,19 @@ def main() -> int:
         (args.experiment_config, "experiment config"),
         (args.learning_split, "learning split"),
         (args.checkpoint, "checkpoint"),
+        (args.r13_data_ready, "R13 data-ready receipt"),
     ):
         if input_path.is_symlink() or not input_path.is_file():
             parser.error(f"{label} must be a non-symlink regular file")
+    try:
+        data_ready = validate_r13_data_ready(
+            args.r13_data_ready,
+            rich_tensor_manifest=training_manifest,
+            learning_split=args.learning_split,
+            experiment_config=args.experiment_config,
+        )
+    except LineageContractError as error:
+        parser.error(str(error))
     try:
         test_access = enforce_partition_access(
             args.partition,
@@ -354,6 +370,22 @@ def main() -> int:
         parser.error("checkpoint learning split path differs from --learning-split")
     if checkpoint.get("experiment_config_sha256") != experiment_config_sha256:
         parser.error("checkpoint was not trained against this experiment config")
+    if (
+        checkpoint.get("source_m0_lineage") != data_ready["source_m0_lineage"]
+        or checkpoint.get("r13_data_ready_sha256")
+        != sha256_file(args.r13_data_ready)
+    ):
+        parser.error("checkpoint is not bound to this R13 data-ready receipt")
+    baseline_arm = checkpoint.get("baseline_arm")
+    if baseline_arm not in ("J1", "J2"):
+        parser.error("checkpoint baseline_arm must be J1 or J2")
+    expected_baseline_weights = (
+        {"joint": 1.0, "operation": 0.0, "target": 0.0, "scope": 0.0}
+        if baseline_arm == "J1"
+        else {"joint": 0.0, "operation": 1.0 / 3.0, "target": 1.0 / 3.0, "scope": 1.0 / 3.0}
+    )
+    if checkpoint.get("baseline_loss_weights") != expected_baseline_weights:
+        parser.error("checkpoint baseline loss contract is invalid")
     input_ablation = checkpoint.get("input_ablation")
     if input_ablation not in evaluation["ablation_inputs"]:
         parser.error("checkpoint input ablation is not in the frozen config")
@@ -385,8 +417,13 @@ def main() -> int:
     if checkpoint.get("seed") not in training["seeds"]:
         parser.error("checkpoint seed is outside the frozen seed registry")
     checkpoint_hyperparameters = checkpoint.get("hyperparameters")
+    expected_checkpoint_training = (
+        {**training, "epochs": 1}
+        if checkpoint.get("smoke_one_epoch") is True
+        else training
+    )
     if not isinstance(checkpoint_hyperparameters, dict) or any(
-        checkpoint_hyperparameters.get(key) != training[key]
+        checkpoint_hyperparameters.get(key) != expected_checkpoint_training[key]
         for key in (
             "epochs",
             "batch_size",
@@ -433,6 +470,7 @@ def main() -> int:
     model.eval()
     rows = []
     paired_rows = []
+    raw_illegal_predictions = []
     strategies = []
     patient_ids = []
     operation_true, operation_pred, target_true, target_pred, scope_true, scope_pred, joint_true, joint_pred = (
@@ -451,13 +489,19 @@ def main() -> int:
     with torch.no_grad():
         for batch in loader:
             output = model(batch["visual"].to(device), batch["spacing_xy"].to(device))
-            jp_tensor, op_tensor, rp_tensor, sp_tensor = decode_joint_goal(
-                output["joint_logits"]
-            )
+            decoded = decode_flat_baseline(output, baseline_arm)
+            jp_tensor = decoded["joint_id"]
+            op_tensor = decoded["operation_id"]
+            rp_tensor = decoded["target_id"]
+            sp_tensor = decoded["scope_id"]
+            raw_scope_tensor = decoded["raw_scope_id"]
+            raw_illegal_tensor = decoded["raw_illegal"]
             jp = jp_tensor.cpu().tolist()
             op = op_tensor.cpu().tolist()
             rp = rp_tensor.cpu().tolist()
             sp = sp_tensor.cpu().tolist()
+            raw_sp = raw_scope_tensor.cpu().tolist()
+            raw_illegal = raw_illegal_tensor.cpu().tolist()
             ot = batch["operation_gold"].tolist()
             rt = batch["target_gold"].tolist()
             st = batch["scope_gold"].tolist()
@@ -511,6 +555,9 @@ def main() -> int:
                         "strategy": strategy,
                         "gold_joint_id": int(legal_gold),
                         "predicted_joint_id": int(jp[index]),
+                        "baseline_arm": baseline_arm,
+                        "raw_predicted_scope_id": int(raw_sp[index]),
+                        "slot_projection_applied": bool(raw_illegal[index]),
                         "gold_operation_id": int(ot[index]),
                         "predicted_operation_id": int(op[index]),
                         "checkpoint_seed": int(checkpoint["seed"]),
@@ -528,6 +575,7 @@ def main() -> int:
                         "test_access_receipt_sha256": test_access_sha256,
                     }
                 )
+                raw_illegal_predictions.append(bool(raw_illegal[index]))
                 strategies.append(strategy)
                 patient_ids.append(str(batch["patient_id"][index]))
                 operation_true.append(ot[index])
@@ -549,8 +597,17 @@ def main() -> int:
         "episode_count": len(rows),
         "checkpoint_schema_version": P2T_CHECKPOINT_SCHEMA,
         "checkpoint_sha256": checkpoint_sha256,
+        "source_m0_lineage": data_ready["source_m0_lineage"],
+        "r13_data_ready_sha256": sha256_file(args.r13_data_ready),
         "checkpoint_criterion": training["checkpoint_criterion"],
         "checkpoint_seed": checkpoint["seed"],
+        "smoke_one_epoch": checkpoint.get("smoke_one_epoch") is True,
+        "baseline_arm": baseline_arm,
+        "raw_invalid_slot_combination_count": int(sum(raw_illegal_predictions)),
+        "raw_invalid_slot_combination_rate": (
+            float(sum(raw_illegal_predictions) / len(raw_illegal_predictions))
+            if raw_illegal_predictions else None
+        ),
         # manifest_sha256 remains the manifest actually inferred on for
         # downstream editor compatibility.  The two explicit fields preserve
         # cross-lane provenance without pretending the checkpoint was trained

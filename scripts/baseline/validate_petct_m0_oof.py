@@ -26,6 +26,7 @@ for support_dir in (SCRIPTS_ROOT, SCRIPTS_ROOT / "data"):
         sys.path.insert(0, str(support_dir))
 
 from audit_psma_v3_dataset import patient_from_case  # noqa: E402
+from common.petct_mainline_lineage import M0_V6_OOF_SCHEMA  # noqa: E402
 from prepare_nnunet_m0_dataset import (  # noqa: E402
     EXPECTED_NNUNET_COMMIT,
     EXPECTED_NNUNET_SOURCE_TREE_SHA256,
@@ -1646,6 +1647,64 @@ def build_natural_oof_binding_from_validated(
         != record["foreground_probability"].get("sha256")
     ):
         raise ValueError("truth binding does not match the foreground probability")
+    if validated.get("schema_version") == M0_V6_OOF_SCHEMA:
+        # v6 OOF per-case records carry no training sha fields; resolve them
+        # from the validated envelope (fold checkpoints, splits_final) and the
+        # live trainer-root files.  The three legacy receipt hashes have no v6
+        # equivalent canonical file and are bound as null (auditable absence).
+        fold = int(record["held_out_fold"])
+        checkpoints = validated.get("checkpoints")
+        if not isinstance(checkpoints, list) or len(checkpoints) != 5:
+            raise ContractError("M0 v6 validated checkpoint inventory is missing")
+        checkpoint_record = checkpoints[fold].get("checkpoint")
+        if not isinstance(checkpoint_record, dict):
+            raise ContractError(f"fold {fold} checkpoint record is missing")
+        checkpoint_path = Path(str(checkpoint_record["path"])).resolve()
+        if (
+            checkpoint_path.is_symlink()
+            or not checkpoint_path.is_file()
+            or _sha256(checkpoint_path) != checkpoint_record.get("sha256")
+        ):
+            raise ContractError(f"fold {fold} checkpoint hash mismatch")
+        trainer_root = checkpoint_path.parent.parent
+        plans_path = trainer_root / "plans.json"
+        dataset_path = trainer_root / "dataset.json"
+        for path in (plans_path, dataset_path):
+            if path.is_symlink() or not path.is_file():
+                raise ContractError(f"trainer-root {path.name} is missing")
+        splits_record = validated.get("splits_final")
+        if not isinstance(splits_record, dict) or not isinstance(
+            splits_record.get("path"), str
+        ):
+            raise ContractError("M0 v6 validated splits_final record is missing")
+        splits_path = Path(str(splits_record["path"])).resolve()
+        if (
+            splits_path.is_symlink()
+            or not splits_path.is_file()
+            or _sha256(splits_path) != splits_record.get("sha256")
+        ):
+            raise ContractError("M0 v6 splits_final hash mismatch")
+        sha_fields = {
+            "checkpoint_sha256": checkpoint_record["sha256"],
+            "plans_sha256": _sha256(plans_path),
+            "dataset_json_sha256": _sha256(dataset_path),
+            "source_tree_sha256": EXPECTED_NNUNET_SOURCE_TREE_SHA256,
+            "splits_final_sha256": splits_record["sha256"],
+            "preprocess_ready_sha256": None,
+            "full_train_ready_sha256": None,
+            "fold_receipt_sha256": None,
+        }
+    else:
+        sha_fields = {
+            "checkpoint_sha256": record["checkpoint_sha256"],
+            "plans_sha256": record["plans_sha256"],
+            "dataset_json_sha256": record["dataset_json_sha256"],
+            "source_tree_sha256": record["source_tree_sha256"],
+            "splits_final_sha256": record["splits_final_sha256"],
+            "preprocess_ready_sha256": record["preprocess_ready_sha256"],
+            "full_train_ready_sha256": record["full_train_ready_sha256"],
+            "fold_receipt_sha256": record["fold_receipt_sha256"],
+        }
     binding = {
         "kind": "patient_excluded_oof",
         "schema_version": NATURAL_PROVENANCE_VERSION,
@@ -1654,14 +1713,7 @@ def build_natural_oof_binding_from_validated(
         "oof_ready_sha256": validated["ready_sha256"],
         "m0_sha256": record["mask"]["sha256"],
         "foreground_probability_sha256": record["foreground_probability"]["sha256"],
-        "checkpoint_sha256": record["checkpoint_sha256"],
-        "plans_sha256": record["plans_sha256"],
-        "dataset_json_sha256": record["dataset_json_sha256"],
-        "source_tree_sha256": record["source_tree_sha256"],
-        "splits_final_sha256": record["splits_final_sha256"],
-        "preprocess_ready_sha256": record["preprocess_ready_sha256"],
-        "full_train_ready_sha256": record["full_train_ready_sha256"],
-        "fold_receipt_sha256": record["fold_receipt_sha256"],
+        **sha_fields,
         "input_ct_sha256": record["input_ct_sha256"],
         "input_pet_sha256": record["input_pet_sha256"],
         "input_gt_sha256": record["input_gt_sha256"],
@@ -1679,11 +1731,27 @@ def validate_natural_oof_binding(
     case_id: str,
     patient_id: str,
     m0_path: Path,
-    ready_validator: Callable[[Path], dict[str, Any]] = validate_oof_ready,
+    ready_validator: Callable[[Path], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Validate OOF_READY and bind one natural episode M0 to its receipt."""
 
     ready_path = ready_path.resolve()
+    if ready_validator is None:
+        try:
+            schema_version = json.loads(
+                ready_path.read_text(encoding="utf-8")
+            ).get("schema_version")
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            schema_version = None
+        if schema_version == M0_V6_OOF_SCHEMA:
+            # The v6 OOF envelope carries no per-case training receipt fields;
+            # validate it with the v6 lineage validator and let the binding
+            # function's v6 branch resolve checkpoint/plan/split hashes.
+            from common.petct_mainline_lineage import validate_m0_v6_oof_ready
+
+            ready_validator = validate_m0_v6_oof_ready
+        else:
+            ready_validator = validate_oof_ready
     validated = ready_validator(ready_path)
     return build_natural_oof_binding_from_validated(
         validated,

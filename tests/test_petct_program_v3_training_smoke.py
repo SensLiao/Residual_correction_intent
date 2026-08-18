@@ -186,6 +186,12 @@ def test_v3_trainers_run_one_epoch_with_frozen_split_receipt(tmp_path: Path) -> 
                     "evaluation_npz": str(evaluation_path),
                     "evaluation_sha256": _sha(evaluation_path),
                     "learning_split_sha256": "PENDING",
+                    "dataset_id": "R13-main-single-round",
+                    "source_m0_lineage": "M0_V6_FIVEFOLD_OOF",
+                    "episode_family_id": f"family-{episode}",
+                    "round_index": 0,
+                    "scribble_count": 1,
+                    "strategy": "centerline",
                 }
             )
             index += 1
@@ -209,6 +215,33 @@ def test_v3_trainers_run_one_epoch_with_frozen_split_receipt(tmp_path: Path) -> 
     label_manifest = tmp_path / "labels.jsonl"
     _write_jsonl(visible_manifest, visible_rows)
     _write_jsonl(label_manifest, label_rows)
+    oof_ready = tmp_path / "M0_V6_FIVEFOLD_OOF_READY.json"
+    oof_ready.write_text("{}\n", encoding="utf-8")
+    config = PROJECT / "configs" / "petct_route_a_experiment_v3.json"
+    lineage = tmp_path / "lineage-receipt.json"
+    lineage.write_text(
+        json.dumps(
+            {
+                "schema_version": "PETCT-R13-LINEAGE-v1.0",
+                "status": "PASS",
+                "dataset_id": "R13-main-single-round",
+                "source_m0_lineage": "M0_V6_FIVEFOLD_OOF",
+                "mainline_eligible": True,
+                "lifecycle": "active",
+                "episode_schema": "single_round_one_scribble_one_strategy_v1",
+                "round_count": 1,
+                "scribbles_per_episode": 1,
+                "strategy_is_label": False,
+                "partitions": ["train", "val"],
+                "locked_test_present": False,
+                "oof_ready": {"path": str(oof_ready.resolve()), "bytes": oof_ready.stat().st_size, "sha256": _sha(oof_ready)},
+                "learning_split": {"path": str(split.resolve()), "bytes": split.stat().st_size, "sha256": split_sha},
+                "experiment_config": {"path": str(config.resolve()), "bytes": config.stat().st_size, "sha256": _sha(config)},
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     receipt = tmp_path / "manifest-receipt.json"
     receipt.write_text(
         json.dumps(
@@ -216,21 +249,29 @@ def test_v3_trainers_run_one_epoch_with_frozen_split_receipt(tmp_path: Path) -> 
                 "schema_version": "PETCT-PROGRAM-MANIFEST-READY-v1.0",
                 "status": "PASS",
                 "locked_test_present": False,
+                "dataset_id": "R13-main-single-round",
+                "source_m0_lineage": "M0_V6_FIVEFOLD_OOF",
+                "mainline_eligible": True,
+                "lifecycle": "active",
+                "lineage_receipt": {
+                    "path": str(lineage.resolve()),
+                    "bytes": lineage.stat().st_size,
+                    "sha256": _sha(lineage),
+                },
                 "learning_split": {"path": str(split.resolve()), "sha256": split_sha},
                 "outputs": {
-                    "inference": {
-                        "path": str(visible_manifest.resolve()), "sha256": _sha(visible_manifest)
-                    },
-                    "labels": {
-                        "path": str(label_manifest.resolve()), "sha256": _sha(label_manifest)
-                    },
+                        "inference": {
+                            "path": str(visible_manifest.resolve()), "bytes": visible_manifest.stat().st_size, "sha256": _sha(visible_manifest)
+                        },
+                        "labels": {
+                            "path": str(label_manifest.resolve()), "bytes": label_manifest.stat().st_size, "sha256": _sha(label_manifest)
+                        },
                 },
             },
             sort_keys=True,
         ),
         encoding="utf-8",
     )
-    config = PROJECT / "configs" / "petct_route_a_experiment_v3.json"
     compiler_checkpoint = tmp_path / "compiler.pt"
     assert compiler_train.main.__name__ == "main"
     old_argv = sys.argv
@@ -241,6 +282,7 @@ def test_v3_trainers_run_one_epoch_with_frozen_split_receipt(tmp_path: Path) -> 
             "--labels", str(label_manifest),
             "--learning-split", str(split),
             "--manifest-receipt", str(receipt),
+            "--lineage-receipt", str(lineage),
             "--candidates", str(candidates),
             "--experiment-config", str(config),
             "--output", str(compiler_checkpoint),
@@ -258,6 +300,34 @@ def test_v3_trainers_run_one_epoch_with_frozen_split_receipt(tmp_path: Path) -> 
     assert compiler_payload["learning_split_sha256"] == split_sha
     assert compiler_payload["candidates_tree_sha256"] == _tree_sha(candidates)
 
+    effect_compiler = tmp_path / "compiler-j9c.pt"
+    try:
+        sys.argv = [
+            "train_petct_program_v3.py",
+            "--episodes", str(visible_manifest),
+            "--labels", str(label_manifest),
+            "--learning-split", str(split),
+            "--manifest-receipt", str(receipt),
+            "--lineage-receipt", str(lineage),
+            "--candidates", str(candidates),
+            "--pointer-targets", str(targets),
+            "--experiment-config", str(config),
+            "--output", str(effect_compiler),
+            "--arm", "J9C",
+            "--dataset-mode", "natural",
+            "--epochs", "1",
+            "--batch-size", "6",
+            "--seed", "3407",
+            "--device", "cpu",
+        ]
+        assert compiler_train.main() == 0
+    finally:
+        sys.argv = old_argv
+    effect_payload = torch.load(effect_compiler, map_location="cpu", weights_only=False)
+    assert effect_payload["arm"] == "J9C"
+    assert effect_payload["dataset_mode"] == "natural"
+    assert effect_payload["hyperparameters"]["lambda_pointer"] > 0
+
     editor_checkpoint = tmp_path / "editor.pt"
     try:
         sys.argv = [
@@ -266,6 +336,7 @@ def test_v3_trainers_run_one_epoch_with_frozen_split_receipt(tmp_path: Path) -> 
             "--labels", str(label_manifest),
             "--learning-split", str(split),
             "--manifest-receipt", str(receipt),
+            "--lineage-receipt", str(lineage),
             "--candidates", str(candidates),
             "--pointer-targets", str(targets),
             "--experiment-config", str(config),
@@ -291,6 +362,7 @@ def test_v3_trainers_run_one_epoch_with_frozen_split_receipt(tmp_path: Path) -> 
             "--labels", str(label_manifest),
             "--learning-split", str(split),
             "--manifest-receipt", str(receipt),
+            "--lineage-receipt", str(lineage),
             "--candidates", str(candidates),
             "--pointer-targets", str(targets),
             "--compiler-checkpoint", str(compiler_checkpoint),

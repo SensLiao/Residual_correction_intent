@@ -127,6 +127,12 @@ def test_v21_operation_control_config_loads_and_frozen_v2_still_loads(
     assert v2["schema_version"] == "PETCT-ROUTE-A-EXPERIMENT-v2.0"
     assert len(v2["p2t"]["simple_first_input_arms"]) == 4
 
+    v3 = load_experiment_config(
+        PROJECT / "configs" / "petct_route_a_experiment_v3.json"
+    )
+    assert v3["schema_version"] == "PETCT-ROUTE-A-EXPERIMENT-v3.0"
+    assert len(v3["p2t"]["simple_first_input_arms"]) == 4
+
     bogus = tmp_path / "bogus.json"
     bogus.write_text('{"schema_version": "PETCT-ROUTE-A-EXPERIMENT-v9.9"}', encoding="utf-8")
     with pytest.raises(LearningContractError, match="unsupported experiment config schema"):

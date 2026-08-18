@@ -40,6 +40,7 @@ from validate_petct_m0_oof import (  # noqa: E402
     validate_split_document,
 )
 import validate_petct_m0_oof as oof_contract  # noqa: E402
+from common.petct_mainline_lineage import LineageContractError  # noqa: E402
 
 
 def _sha(path: Path) -> str:
@@ -795,6 +796,21 @@ def test_natural_binding_requires_matching_case_patient_fold_ready_and_m0_hash(
             patient_id=case_record["patient_id"],
             m0_path=m0,
             ready_validator=lambda _path: validated_ready,
+        )
+
+
+def test_natural_binding_routes_v6_oof_ready_to_v6_validator(tmp_path: Path) -> None:
+    ready_path = tmp_path / "OOF_READY_v6.json"
+    ready_path.write_text(
+        json.dumps({"schema_version": "PETCT-M0-V6-OOF-READY-v1.0"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(LineageContractError, match="M0 v6 OOF"):
+        validate_natural_oof_binding(
+            ready_path,
+            case_id="case",
+            patient_id="patient",
+            m0_path=tmp_path / "m0.nii.gz",
         )
 
 

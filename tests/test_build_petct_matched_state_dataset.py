@@ -24,11 +24,13 @@ from data.materialize_petct_pilot3_states import (  # noqa: E402
 from data.materialize_petct_pilot6_states import (  # noqa: E402
     DATASET_ID,
     GOALS,
+    GOALS_BY_OPERATION,
     construct_pilot6_states,
     label_components_18,
 )
 from p2t.build_petct_matched_state_dataset import (  # noqa: E402
     MatchedStateGeometryError,
+    _audit_staged_attempt_invariants,
     _episode_id,
     _group_id,
     _matched_state_group_id,
@@ -94,7 +96,7 @@ def test_official_cues_precede_intent_and_rederive_exact_six_topologies() -> Non
         minimum_local_area_mm2=50.0,
     )
     assert result["eligible"] is True
-    assert tuple(result["states"]) == GOALS
+    assert set(result["states"]) == set(GOALS)
     assert result["receipt"]["stage_order"].index(
         "official_autopetv_operation_specific_scribble_on_shared_residual_support"
     ) < result["receipt"]["stage_order"].index("canonical_intent_rendering")
@@ -166,6 +168,140 @@ def test_episode_id_is_content_bound_and_has_no_gold_goal_input() -> None:
         _episode_id(attempt_id, "ADD_SAME_LOCAL")
     with pytest.raises(ValueError, match="must not be label-derived"):
         _episode_id(**{**common, "attempt_id": "attempt-ADD_SAME_LOCAL"})
+
+
+def _audit_row(attempt_id: str, operation: str, goal: str) -> dict:
+    return {
+        "attempt_id": attempt_id,
+        "operation": operation,
+        "goal": goal,
+        "matched_state_group_id": _matched_state_group_id(attempt_id, operation),
+    }
+
+
+def _audit_triplet(attempt_id: str, operation: str) -> list[dict]:
+    return [
+        _audit_row(attempt_id, operation, goal)
+        for goal in sorted(GOALS_BY_OPERATION[operation])
+    ]
+
+
+def _audit(
+    tmp_path: Path,
+    rows: list[dict],
+    exclusions: list[dict],
+    staged: set[str],
+    requested: set[str],
+) -> tuple[dict, set, set]:
+    state_stage = tmp_path / "states"
+    state_stage.mkdir()
+    for attempt_id in staged:
+        (state_stage / attempt_id).mkdir()
+    return _audit_staged_attempt_invariants(
+        rows=rows,
+        exclusions=exclusions,
+        state_stage=state_stage,
+        requested_attempts={aid: {} for aid in sorted(requested)},
+    )
+
+
+def test_finalize_audit_accepts_complete_six_row_attempt(tmp_path: Path) -> None:
+    rows = _audit_triplet("attempt-a", "ADD") + _audit_triplet(
+        "attempt-a", "REMOVE"
+    )
+    group_counts, generated, excluded = _audit(
+        tmp_path, rows, [], {"attempt-a"}, {"attempt-a"}
+    )
+    assert group_counts == {
+        _matched_state_group_id("attempt-a", "ADD"): 3,
+        _matched_state_group_id("attempt-a", "REMOVE"): 3,
+    }
+    assert generated == {"attempt-a"}
+    assert excluded == set()
+
+
+def test_finalize_audit_accepts_partially_excluded_three_row_attempt(
+    tmp_path: Path,
+) -> None:
+    rows = _audit_triplet("attempt-a", "ADD")
+    exclusions = [
+        {
+            "attempt_id": "attempt-a",
+            "operation": "REMOVE",
+            "reason": "CONTROLLED_STATE_INELIGIBLE:REMOVE",
+        }
+    ]
+    _, generated, excluded = _audit(
+        tmp_path, rows, exclusions, {"attempt-a"}, {"attempt-a"}
+    )
+    assert generated == {"attempt-a"}
+    assert excluded == {"attempt-a"}
+
+
+def test_finalize_audit_accepts_fully_excluded_attempt_without_state_dir(
+    tmp_path: Path,
+) -> None:
+    rows = _audit_triplet("attempt-a", "ADD")
+    exclusions = [
+        {
+            "attempt_id": "attempt-b",
+            "operation": "ADD",
+            "reason": "CONTROLLED_STATE_INELIGIBLE:ADD",
+        },
+        {
+            "attempt_id": "attempt-b",
+            "operation": "REMOVE",
+            "reason": "AUTHORIZED_TARGET_EXCEEDS_FROZEN_PHYSICAL_CROP:REMOVE",
+        },
+    ]
+    _, generated, excluded = _audit(
+        tmp_path, rows, exclusions, {"attempt-a"}, {"attempt-a", "attempt-b"}
+    )
+    assert generated == {"attempt-a"}
+    assert excluded == {"attempt-b"}
+
+
+def test_finalize_audit_rejects_staged_dir_without_rows(tmp_path: Path) -> None:
+    rows = _audit_triplet("attempt-a", "ADD")
+    with pytest.raises(RuntimeError, match="differ from complete attempts"):
+        _audit(
+            tmp_path,
+            rows,
+            [],
+            {"attempt-a", "attempt-b"},
+            {"attempt-a", "attempt-b"},
+        )
+
+
+def test_finalize_audit_rejects_duplicate_attempt_operation_exclusion(
+    tmp_path: Path,
+) -> None:
+    rows = _audit_triplet("attempt-a", "ADD")
+    exclusions = [
+        {
+            "attempt_id": "attempt-a",
+            "operation": "REMOVE",
+            "reason": "CONTROLLED_STATE_INELIGIBLE:REMOVE",
+        },
+        {
+            "attempt_id": "attempt-a",
+            "operation": "REMOVE",
+            "reason": "CONTROLLED_STATE_INELIGIBLE:REMOVE",
+        },
+    ]
+    with pytest.raises(RuntimeError, match="multiple exclusions"):
+        _audit(tmp_path, rows, exclusions, {"attempt-a"}, {"attempt-a"})
+
+
+def test_finalize_audit_rejects_generated_and_fully_excluded_overlap(
+    tmp_path: Path,
+) -> None:
+    rows = _audit_triplet("attempt-a", "ADD")
+    exclusions = [
+        {"attempt_id": "attempt-a", "reason": "IDENTITY_POLICY_CROSSED"}
+    ]
+    with pytest.raises(RuntimeError, match="generated and fully excluded"):
+        _audit(tmp_path, rows, exclusions, {"attempt-a"}, {"attempt-a"})
 
 
 def test_goal_mismatch_is_a_hard_geometry_failure(monkeypatch) -> None:

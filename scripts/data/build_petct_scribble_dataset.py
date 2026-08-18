@@ -932,8 +932,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     validated_oof = None
     if args.lane == "natural":
         from baseline.validate_petct_m0_oof import validate_oof_ready_receipt_only
+        from common.petct_mainline_lineage import (
+            M0_V6_OOF_SCHEMA,
+            validate_m0_v6_oof_ready,
+        )
 
-        validated_oof = validate_oof_ready_receipt_only(args.oof_ready)
+        with args.oof_ready.open("r", encoding="utf-8") as stream:
+            oof_schema = json.load(stream).get("schema_version")
+        validated_oof = (
+            validate_m0_v6_oof_ready(args.oof_ready)
+            if oof_schema == M0_V6_OOF_SCHEMA
+            else validate_oof_ready_receipt_only(args.oof_ready)
+        )
     rows: list[dict[str, Any]] = []
     exclusions: list[dict[str, Any]] = []
     patient_partition: Dict[str, str] = {}
