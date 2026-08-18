@@ -11,3 +11,4 @@ __pycache__/
 /runs/
 .idea/
 .vscode/
+.ruff_cache/

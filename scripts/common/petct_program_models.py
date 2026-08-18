@@ -248,12 +248,35 @@ class LegalCallCompiler(nn.Module):
             raise ProgramContractError(
                 "family logits must contain exactly the legal operation-conditioned families"
             )
-        family_id = int(family_logits.argmax().item())
+        selection_logits = family_logits.clone()
+        eligible_families = list(legal)
+        # An ADD call may only name an existing component when at least one
+        # visible candidate exists.  If the current M0 is empty, CREATE_NEW
+        # is the sole grammar-legal family; do not invent a pointer posterior
+        # merely to satisfy an otherwise impossible family prediction.
+        if operation == "ADD" and not components:
+            for index, candidate_family in enumerate(legal):
+                if candidate_family != "CREATE_NEW":
+                    selection_logits[index] = float("-inf")
+            eligible_families = ["CREATE_NEW"]
+        if not bool(torch.isfinite(selection_logits).any()):
+            raise ProgramContractError("no grammar-eligible family remains")
+        family_id = int(selection_logits.argmax().item())
         family = legal[family_id]
+        serializable_selection_scores = [
+            float(score.item()) if bool(torch.isfinite(score)) else None
+            for score in selection_logits
+        ]
         trace: List[Dict[str, object]] = [
             {"step": "OBSERVE", "operation_authority": operation, "source": "signed_cue"},
             {"step": "ENUMERATE", "component_count": len(components)},
-            {"step": "SCORE", "family_scores": family_logits.tolist(), "legal_families": legal},
+            {
+                "step": "SCORE",
+                "family_scores": family_logits.tolist(),
+                "selection_scores": serializable_selection_scores,
+                "legal_families": legal,
+                "eligible_families": eligible_families,
+            },
         ]
         if operation == "ADD" and family != "CREATE_NEW":
             if pointer_probs is None:

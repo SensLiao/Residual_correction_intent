@@ -318,6 +318,19 @@ def test_main_materializes_separated_outputs_and_publishes_manifest_last(
         assert np.count_nonzero(bundle["cue_bg"]) == 0
 
 
+def test_main_materializes_natural_rows_without_matched_state_group(
+    tmp_path: Path, capsys
+) -> None:
+    row, source_manifest, outputs, argv = _materialization_fixture(tmp_path)
+    row.pop("matched_state_group_id")
+    source_manifest.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    assert main(argv) == 0
+    assert json.loads(capsys.readouterr().out)["episodes"] == 1
+    materialized = json.loads(outputs["manifest"].read_text(encoding="utf-8"))
+    assert "matched_state_group_id" not in materialized
+    assert materialized["episode_id"] == "ep-a"
+
+
 def test_main_rolls_back_staged_npz_when_later_episode_fails(
     tmp_path: Path,
 ) -> None:

@@ -273,7 +273,15 @@ def test_machine_admission_register_and_role_invariants_are_fail_closed() -> Non
         blocker["id"] for blocker in records["nninteractive"]["blockers"]
     } == {"patient_excluded_oof_inputs", "current_config_runtime_receipt"}
     assert records["scribbleprompt"]["server_package_status"] == "NOT_UPLOADED"
-    assert records["prism"]["role"] == "REFERENCE_ONLY"
+    # 2026-08-18 baseline expansion (D-2026-08-18-01): prism is a RUN
+    # candidate via from-scratch training on the frozen split; swinunetr /
+    # stunet are staged automatic-baseline lanes; umamba_bot stays
+    # reference-only (env-blocked).
+    assert records["prism"]["role"] == "RUN"
+    assert records["swinunetr"]["role"] == "RUN"
+    assert records["stunet"]["role"] == "RUN"
+    assert records["umamba_bot"]["role"] == "REFERENCE_ONLY"
+    assert records["segvol"]["role"] == "REFERENCE_ONLY"
 
     missing_record = copy.deepcopy(contract)
     missing_record["method_selection_review"]["machine_readable_admission_register"][
@@ -290,13 +298,15 @@ def test_machine_admission_register_and_role_invariants_are_fail_closed() -> Non
     stale_records = stale_role["method_selection_review"][
         "machine_readable_admission_register"
     ]["records"]
-    next(record for record in stale_records if record["id"] == "prism")["role"] = "RUN"
-    with pytest.raises(ContractError, match="role mismatch for prism"):
+    next(record for record in stale_records if record["id"] == "prism")[
+        "role"
+    ] = "REFERENCE_ONLY"
+    with pytest.raises(ContractError, match="prism.role differs from methods"):
         validate_contract(stale_role)
 
     reference = copy.deepcopy(contract)
     reference_method = next(
-        method for method in reference["methods"] if method["id"] == "prism"
+        method for method in reference["methods"] if method["id"] == "segvol"
     )
     reference_method["execution"] = copy.deepcopy(
         next(

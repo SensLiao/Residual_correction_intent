@@ -311,3 +311,94 @@ def test_oof_mask_rejects_symlink_before_resolve(tmp_path: Path, monkeypatch) ->
             {"run_dir": str(run_dir)},
             {"mask": {"path": "mask.nii.gz", "bytes": 1, "sha256": "0" * 64}},
         )
+
+
+def test_natural_binding_v6_schema_resolves_training_hashes(tmp_path: Path) -> None:
+    """Regression (2026-08-18 KeyError): v6 OOF per-case records carry no
+    training sha fields; the natural binding must resolve them from the v6
+    validated envelope (checkpoints / splits_final) and live trainer-root
+    files instead of the legacy per-case schema."""
+    from baseline.validate_petct_m0_oof import (
+        build_natural_oof_binding_from_validated,
+    )
+    from common.petct_mainline_lineage import M0_V6_OOF_SCHEMA
+
+    run_dir = tmp_path / "oof_run"
+    (run_dir / "masks").mkdir(parents=True)
+    (run_dir / "probabilities").mkdir()
+    m0 = run_dir / "masks" / "case-a.nii.gz"
+    _write_nifti(m0, np.zeros((5, 5, 1), dtype=np.uint8))
+    prob = run_dir / "probabilities" / "case-a.npz"
+    prob.write_bytes(b"prob")
+
+    trainer_root = tmp_path / "trainer_root"
+    fold_dir = trainer_root / "fold_0"
+    fold_dir.mkdir(parents=True)
+    checkpoint = fold_dir / "checkpoint_final.pth"
+    checkpoint.write_bytes(b"ckpt")
+    plans = trainer_root / "plans.json"
+    plans.write_text('{"marker": "plans"}\n', encoding="utf-8")
+    dataset_json = trainer_root / "dataset.json"
+    dataset_json.write_text('{"marker": "dataset"}\n', encoding="utf-8")
+    splits_file = tmp_path / "splits_final.json"
+    splits_file.write_text("{}", encoding="utf-8")
+    ready = run_dir / "M0_V6_FIVEFOLD_OOF_READY.json"
+    ready.write_text("{}", encoding="utf-8")
+
+    def file_record(path: Path) -> dict:
+        return {
+            "path": str(path),
+            "bytes": path.stat().st_size,
+            "sha256": sha256_file(path),
+        }
+
+    checkpoints = [
+        {"fold": fold, "checkpoint": file_record(checkpoint)} for fold in range(5)
+    ]
+    validated = {
+        "status": "PASS",
+        "schema_version": M0_V6_OOF_SCHEMA,
+        "patient_excluded": True,
+        "ready_path": str(ready),
+        "ready_sha256": sha256_file(ready),
+        "run_dir": str(run_dir),
+        "checkpoints": checkpoints,
+        "splits_final": file_record(splits_file),
+        "cases": {
+            "case-a": {
+                "patient_id": "patient-a",
+                "held_out_fold": 0,
+                "mask": {
+                    "path": "masks/case-a.nii.gz",
+                    "bytes": m0.stat().st_size,
+                    "sha256": sha256_file(m0),
+                },
+                "foreground_probability": {
+                    "path": "probabilities/case-a.npz",
+                    "bytes": prob.stat().st_size,
+                    "sha256": sha256_file(prob),
+                },
+                "input_ct_sha256": "a" * 64,
+                "input_pet_sha256": "b" * 64,
+                "input_gt_sha256": "c" * 64,
+            }
+        },
+    }
+    binding = build_natural_oof_binding_from_validated(
+        validated,
+        ready_path=ready,
+        case_id="case-a",
+        patient_id="patient-a",
+        m0_path=m0,
+        leaf_binding=None,
+    )
+    assert binding["checkpoint_sha256"] == sha256_file(checkpoint)
+    assert binding["plans_sha256"] == sha256_file(plans)
+    assert binding["dataset_json_sha256"] == sha256_file(dataset_json)
+    assert binding["splits_final_sha256"] == sha256_file(splits_file)
+    assert len(binding["source_tree_sha256"]) == 64
+    assert binding["preprocess_ready_sha256"] is None
+    assert binding["full_train_ready_sha256"] is None
+    assert binding["fold_receipt_sha256"] is None
+    assert binding["input_ct_sha256"] == "a" * 64
+    assert len(binding["binding_sha256"]) == 64

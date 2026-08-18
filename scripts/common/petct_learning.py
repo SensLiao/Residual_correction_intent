@@ -18,6 +18,7 @@ from torch import Tensor
 from torch.utils.data import Dataset
 
 from common.petct_models import (
+    decode_joint_goal,
     EDITOR_PRIMARY_ARCHITECTURE_ID,
     OPERATION_TO_ID,
     TARGET_TO_ID,
@@ -38,6 +39,7 @@ EXPERIMENT_CONFIG_SCHEMA = "PETCT-ROUTE-A-EXPERIMENT-v2.0"
 EXPERIMENT_CONFIG_SCHEMAS = (
     EXPERIMENT_CONFIG_SCHEMA,
     "PETCT-ROUTE-A-EXPERIMENT-v2.1",
+    "PETCT-ROUTE-A-EXPERIMENT-v3.0",
 )
 P2T_CHECKPOINT_SCHEMA = "PETCT-P2T-CHECKPOINT-v2.0"
 P2T_PREDICTION_SCHEMA = "PETCT-P2T-PREDICTION-v2.0"
@@ -60,6 +62,47 @@ WRONG_OPERATION_SEMANTICS = (
     "operation for physical set algebra and scoring; never construct a gold "
     "target or confirmatory utility row"
 )
+
+
+def decode_flat_baseline(
+    output: Mapping[str, Tensor], baseline_arm: str
+) -> Dict[str, Tensor]:
+    """Decode J1 joint calls or J2 independent slots into legal six-class calls.
+
+    J2 preserves its raw invalid NEW_LOCAL signal for metrics, then projects
+    only that scope to COMPLETE so the downstream editor always receives an
+    executable legal call.  The projection is explicit, never silent.
+    """
+
+    if baseline_arm == "J1":
+        joint_id, operation_id, target_id, scope_id = decode_joint_goal(
+            output["joint_logits"]
+        )
+        raw_illegal = torch.zeros_like(joint_id, dtype=torch.bool)
+        raw_scope_id = scope_id.clone()
+    elif baseline_arm == "J2":
+        operation_id = output["operation_logits"].argmax(dim=1)
+        target_id = output["target_logits"].argmax(dim=1)
+        raw_scope_id = output["scope_logits"].argmax(dim=1)
+        raw_illegal = (target_id == TARGET_TO_ID["NEW"]) & (
+            raw_scope_id == SCOPE_TO_ID["LOCAL"]
+        )
+        scope_id = torch.where(
+            raw_illegal,
+            torch.full_like(raw_scope_id, SCOPE_TO_ID["COMPLETE"]),
+            raw_scope_id,
+        )
+        joint_id = legal_joint_ids(operation_id, target_id, scope_id)
+    else:
+        raise LearningContractError("baseline_arm must be J1 or J2")
+    return {
+        "joint_id": joint_id,
+        "operation_id": operation_id,
+        "target_id": target_id,
+        "scope_id": scope_id,
+        "raw_scope_id": raw_scope_id,
+        "raw_illegal": raw_illegal,
+    }
 
 
 def sha256_file(path: Path) -> str:

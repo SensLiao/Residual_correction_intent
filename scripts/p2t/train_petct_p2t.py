@@ -19,6 +19,7 @@ from common.petct_learning import (  # noqa: E402
     EpisodeDataset,
     LearningContractError,
     P2T_CHECKPOINT_SCHEMA,
+    decode_flat_baseline,
     legal_joint_ids,
     load_experiment_config,
     load_jsonl,
@@ -39,6 +40,10 @@ from common.petct_models import (  # noqa: E402
     p2t_architecture_contract,
     validate_p2t_architecture_selection,
 )
+from common.petct_mainline_lineage import (  # noqa: E402
+    LineageContractError,
+    validate_r13_data_ready,
+)
 
 
 def main() -> int:
@@ -46,6 +51,9 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--learning-split", type=Path, required=True)
     parser.add_argument("--experiment-config", type=Path, required=True)
+    parser.add_argument("--r13-data-ready", type=Path, required=True)
+    parser.add_argument("--baseline-arm", choices=["J1", "J2"], required=True)
+    parser.add_argument("--smoke-one-epoch", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--epochs", type=int, help="optional frozen-config assertion")
     parser.add_argument(
@@ -84,8 +92,21 @@ def main() -> int:
     if args.output.exists():
         parser.error("output already exists")
     try:
+        data_ready = validate_r13_data_ready(
+            args.r13_data_ready,
+            rich_tensor_manifest=args.manifest,
+            learning_split=args.learning_split,
+            experiment_config=args.experiment_config,
+        )
+    except LineageContractError as error:
+        parser.error(str(error))
+    try:
         config = load_experiment_config(args.experiment_config)
         training = load_training_contract(config, "p2t")
+        if args.smoke_one_epoch:
+            if args.epochs not in (None, 1):
+                raise LearningContractError("smoke-one-epoch requires --epochs 1")
+            training = {**training, "epochs": 1}
         evaluation = load_p2t_evaluation_contract(config)
         seed = select_frozen_seed(training, args.seed)
         validate_frozen_override("--epochs", args.epochs, training["epochs"])
@@ -136,6 +157,11 @@ def main() -> int:
         lr=training["learning_rate"],
         weight_decay=training["weight_decay"],
     )
+    loss_weights = (
+        {"joint": 1.0, "operation": 0.0, "target": 0.0, "scope": 0.0}
+        if args.baseline_arm == "J1"
+        else {"joint": 0.0, "operation": 1.0 / 3.0, "target": 1.0 / 3.0, "scope": 1.0 / 3.0}
+    )
     best = None
     history = []
     for epoch in range(training["epochs"]):
@@ -148,22 +174,18 @@ def main() -> int:
             target_gold = batch["target_gold"].to(device)
             scope_gold = batch["scope_gold"].to(device)
             joint_gold = legal_joint_ids(operation_gold, target_gold, scope_gold)
-            loss = training["joint_loss_weight"] * torch.nn.functional.cross_entropy(
+            loss = loss_weights["joint"] * torch.nn.functional.cross_entropy(
                 output["joint_logits"], joint_gold
             )
-            loss = loss + training[
-                "operation_loss_weight"
-            ] * torch.nn.functional.cross_entropy(
+            loss = loss + loss_weights["operation"] * torch.nn.functional.cross_entropy(
                 output["operation_logits"], operation_gold
             )
-            loss = loss + training[
-                "target_loss_weight"
-            ] * torch.nn.functional.cross_entropy(
+            loss = loss + loss_weights["target"] * torch.nn.functional.cross_entropy(
                 output["target_logits"], target_gold
             )
-            loss = loss + training[
-                "scope_loss_weight"
-            ] * torch.nn.functional.cross_entropy(output["scope_logits"], scope_gold)
+            loss = loss + loss_weights["scope"] * torch.nn.functional.cross_entropy(
+                output["scope_logits"], scope_gold
+            )
             if not torch.isfinite(loss):
                 raise RuntimeError("non-finite P2T training loss")
             optimizer.zero_grad(set_to_none=True)
@@ -181,31 +203,24 @@ def main() -> int:
                 target_gold = batch["target_gold"].to(device)
                 scope_gold = batch["scope_gold"].to(device)
                 joint_gold = legal_joint_ids(operation_gold, target_gold, scope_gold)
-                loss = training[
-                    "joint_loss_weight"
-                ] * torch.nn.functional.cross_entropy(
+                loss = loss_weights["joint"] * torch.nn.functional.cross_entropy(
                     output["joint_logits"], joint_gold
                 )
-                loss = loss + training[
-                    "operation_loss_weight"
-                ] * torch.nn.functional.cross_entropy(
+                loss = loss + loss_weights["operation"] * torch.nn.functional.cross_entropy(
                     output["operation_logits"], operation_gold
                 )
-                loss = loss + training[
-                    "target_loss_weight"
-                ] * torch.nn.functional.cross_entropy(
+                loss = loss + loss_weights["target"] * torch.nn.functional.cross_entropy(
                     output["target_logits"], target_gold
                 )
-                loss = loss + training[
-                    "scope_loss_weight"
-                ] * torch.nn.functional.cross_entropy(
+                loss = loss + loss_weights["scope"] * torch.nn.functional.cross_entropy(
                     output["scope_logits"], scope_gold
                 )
                 if not torch.isfinite(loss):
                     raise RuntimeError("non-finite P2T validation loss")
                 val_loss += float(loss) * visual.shape[0]
                 val_true.extend(joint_gold.cpu().tolist())
-                val_pred.extend(output["joint_logits"].argmax(dim=1).cpu().tolist())
+                decoded = decode_flat_baseline(output, args.baseline_arm)
+                val_pred.extend(decoded["joint_id"].cpu().tolist())
                 val_patients.extend(list(batch["patient_id"]))
         row = {
             "epoch": epoch,
@@ -228,9 +243,19 @@ def main() -> int:
     state_dict = best.pop("state_dict")
     checkpoint = {
         "schema_version": P2T_CHECKPOINT_SCHEMA,
-        "status": "TRAINED_WHEN_THIS_SCRIPT_IS_EXECUTED",
+        "status": (
+            "SMOKE_ONLY_NOT_EFFECT_RESULT"
+            if args.smoke_one_epoch
+            else "TRAINED_WHEN_THIS_SCRIPT_IS_EXECUTED"
+        ),
+        "smoke_one_epoch": bool(args.smoke_one_epoch),
         "seed": seed,
         "seed_registry": training["seeds"],
+        "baseline_arm": args.baseline_arm,
+        "baseline_loss_weights": loss_weights,
+        "source_m0_lineage": data_ready["source_m0_lineage"],
+        "r13_data_ready": str(args.r13_data_ready.resolve()),
+        "r13_data_ready_sha256": sha256_file(args.r13_data_ready),
         "hyperparameters": {
             key: training[key]
             for key in (

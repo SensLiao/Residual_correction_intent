@@ -174,6 +174,37 @@ def test_prediction_first_compiler_editor_evaluator_dry_run(tmp_path: Path) -> N
     _write_jsonl(visible_manifest, visible_rows)
     _write_jsonl(labels_manifest, label_rows)
 
+    oof_ready = tmp_path / "M0_V6_FIVEFOLD_OOF_READY.json"
+    learning_split = tmp_path / "learning_split.json"
+    experiment_config = tmp_path / "experiment_v3.json"
+    for path in (oof_ready, learning_split, experiment_config):
+        path.write_text("{}\n", encoding="utf-8")
+    lineage = tmp_path / "lineage-receipt.json"
+    lineage.write_text(
+        json.dumps(
+            {
+                "schema_version": "PETCT-R13-LINEAGE-v1.0",
+                "status": "PASS",
+                "dataset_id": "R13-main-single-round",
+                "source_m0_lineage": "M0_V6_FIVEFOLD_OOF",
+                "mainline_eligible": True,
+                "lifecycle": "active",
+                "episode_schema": "single_round_one_scribble_one_strategy_v1",
+                "round_count": 1,
+                "scribbles_per_episode": 1,
+                "strategy_is_label": False,
+                "partitions": ["train", "val"],
+                "locked_test_present": False,
+                "oof_ready": {"path": str(oof_ready.resolve()), "bytes": oof_ready.stat().st_size, "sha256": _sha(oof_ready)},
+                "learning_split": {"path": str(learning_split.resolve()), "bytes": learning_split.stat().st_size, "sha256": _sha(learning_split)},
+                "experiment_config": {"path": str(experiment_config.resolve()), "bytes": experiment_config.stat().st_size, "sha256": _sha(experiment_config)},
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    lineage_sha = _sha(lineage)
+
     compiler = ProgramCompilerNet(include_repair=True)
     compiler_checkpoint = tmp_path / "compiler.pt"
     torch.save(
@@ -182,6 +213,8 @@ def test_prediction_first_compiler_editor_evaluator_dry_run(tmp_path: Path) -> N
             "architecture_id": "matched_legal_component_program_v1",
             "episodes_sha256": _sha(visible_manifest),
             "candidates_tree_sha256": _candidate_tree_sha(candidates_dir),
+            "source_m0_lineage": "M0_V6_FIVEFOLD_OOF",
+            "lineage_receipt_sha256": lineage_sha,
             "hyperparameters": {"include_repair": True},
             "state_dict": compiler.state_dict(),
         },
@@ -194,6 +227,7 @@ def test_prediction_first_compiler_editor_evaluator_dry_run(tmp_path: Path) -> N
             "--episodes", str(visible_manifest),
             "--candidates", str(candidates_dir),
             "--checkpoint", str(compiler_checkpoint),
+            "--lineage-receipt", str(lineage),
             "--partition", "val",
             "--output", str(predictions),
             "--receipt", str(prediction_receipt),
@@ -212,6 +246,8 @@ def test_prediction_first_compiler_editor_evaluator_dry_run(tmp_path: Path) -> N
             "schema_version": "PETCT-PROGRAM-EDITOR-CHECKPOINT-v1.0",
             "episodes_sha256": _sha(visible_manifest),
             "candidates_tree_sha256": _candidate_tree_sha(candidates_dir),
+            "source_m0_lineage": "M0_V6_FIVEFOLD_OOF",
+            "lineage_receipt_sha256": lineage_sha,
             "arm": "J9",
             "state_dict": editor.state_dict(),
         },
@@ -227,6 +263,7 @@ def test_prediction_first_compiler_editor_evaluator_dry_run(tmp_path: Path) -> N
             "--program-predictions", str(predictions),
             "--program-receipt", str(prediction_receipt),
             "--editor-checkpoint", str(editor_checkpoint),
+            "--lineage-receipt", str(lineage),
             "--partition", "val",
             "--output-dir", str(editor_dir),
             "--output-manifest", str(editor_manifest),
@@ -258,6 +295,7 @@ def test_prediction_first_compiler_editor_evaluator_dry_run(tmp_path: Path) -> N
             "--program-predictions", str(oracle_calls),
             "--program-receipt", str(oracle_call_receipt),
             "--editor-checkpoint", str(editor_checkpoint),
+            "--lineage-receipt", str(lineage),
             "--partition", "val",
             "--output-dir", str(oracle_dir),
             "--output-manifest", str(oracle_editor_manifest),
@@ -272,6 +310,7 @@ def test_prediction_first_compiler_editor_evaluator_dry_run(tmp_path: Path) -> N
         [
             "--predictions", str(predictions),
             "--prediction-receipt", str(prediction_receipt),
+            "--lineage-receipt", str(lineage),
             "--labels", str(labels_manifest),
             "--inference-manifest", str(visible_manifest),
             "--candidates", str(candidates_dir),

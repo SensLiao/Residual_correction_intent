@@ -30,6 +30,10 @@ from common.petct_program_learning import (  # noqa: E402
     _sha256_file,
     program_collate,
 )
+from common.petct_mainline_lineage import (  # noqa: E402
+    MAINLINE_SOURCE,
+    validate_r13_lineage_receipt,
+)
 from common.petct_program_models import (  # noqa: E402
     LegalCallCompiler,
     ProgramCompilerNet,
@@ -81,6 +85,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--episodes", type=Path, required=True)
     parser.add_argument("--candidates", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--lineage-receipt", type=Path, required=True)
     parser.add_argument("--partition", choices=("train", "val"), required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
@@ -103,12 +108,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     candidates = _load_candidates(args.candidates)
     candidate_tree_sha = _tree_sha256(args.candidates)
+    lineage = validate_r13_lineage_receipt(args.lineage_receipt)
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     if (
         checkpoint.get("schema_version") != "PETCT-PROGRAM-COMPILER-CHECKPOINT-v1.0"
         or checkpoint.get("architecture_id") != "matched_legal_component_program_v1"
         or checkpoint.get("episodes_sha256") != _sha256_file(args.episodes)
         or checkpoint.get("candidates_tree_sha256") != candidate_tree_sha
+        or checkpoint.get("source_m0_lineage") != MAINLINE_SOURCE
+        or checkpoint.get("lineage_receipt_sha256") != lineage["receipt_sha256"]
     ):
         raise LearningContractError("checkpoint is not bound to inference inputs")
     include_repair = bool(checkpoint["hyperparameters"]["include_repair"])
@@ -220,6 +228,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "episodes_sha256": manifest_sha,
         "candidates_tree_sha256": candidate_tree_sha,
         "checkpoint_sha256": checkpoint_sha,
+        "source_m0_lineage": MAINLINE_SOURCE,
+        "lineage_receipt_sha256": lineage["receipt_sha256"],
         "schema_sha256": _sha256_file(args.schema),
         "label_lane_opened": False,
     }

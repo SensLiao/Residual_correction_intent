@@ -246,9 +246,10 @@ def materialize_episode(
 ):
     if row.get("experiment_config_sha256") != config_sha256:
         raise RuntimeError("episode manifest was built with a different config")
+    # Natural single-round rows have no matched-state grouping; the R13
+    # identity attaches episode_family_id downstream in the program-manifest
+    # materializer.  Controlled-lane rows still carry the field through.
     matched_state_group_id = str(row.get("matched_state_group_id") or "").strip()
-    if not matched_state_group_id:
-        raise RuntimeError("episode is missing matched_state_group_id")
     goal = str(row.get("goal") or "")
     try:
         operation, target, scope = intent_slots_from_goal(goal)
@@ -419,10 +420,9 @@ def materialize_episode(
         )
         if key in row
     }
-    return {
+    materialized = {
         "case_id": str(row["case_id"]),
         "episode_id": episode_id,
-        "matched_state_group_id": matched_state_group_id,
         "patient_id": str(row["patient_id"]),
         "partition": str(row["partition"]),
         "held_out_fold": int(row["held_out_fold"]),
@@ -465,6 +465,9 @@ def materialize_episode(
         },
         **provenance,
     }
+    if matched_state_group_id:
+        materialized["matched_state_group_id"] = matched_state_group_id
+    return materialized
 
 
 def main(argv: Sequence[str] | None = None) -> int:

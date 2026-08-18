@@ -46,6 +46,20 @@ def test_physical_inference_manifest_has_only_allowlisted_visible_fields():
     assert audit[0]["source_record"]["source_evaluation"]["gt_path"]
 
 
+def test_natural_rich_row_without_matched_group_splits_cleanly():
+    row = _rich_row()
+    row.pop("matched_state_group_id")
+    inference, labels, audit = materializer.split_rows([row])
+    assert "matched_state_group_id" not in labels[0]
+    assert labels[0]["episode_id"] == row["episode_id"]
+    assert "patient" not in str(inference[0]).casefold()
+
+
+def test_controlled_rich_row_still_carries_matched_group_id():
+    inference, labels, audit = materializer.split_rows([_rich_row()])
+    assert labels[0]["matched_state_group_id"] == "audit-group"
+
+
 def test_label_derived_visible_path_fails_closed():
     row = _rich_row()
     row["visible_npz"] = "/visible/ADD_SAME_LOCAL/m0.npz"

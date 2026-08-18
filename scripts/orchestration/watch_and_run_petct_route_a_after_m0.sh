@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+echo "HISTORICAL_ONLY: superseded Route A watcher cannot run after the R13/M0-v6 cutover." >&2
+exit 64
+
 # Wait only for the already-running, receipt-bound M0 campaign. This watcher
 # never starts, stops, signals, or kills a process. Once all baseline evidence
 # and both GPUs are idle, run the val-only Route A chain in the foreground,

@@ -61,6 +61,8 @@ from data.validate_petct_learning_split import (  # noqa: E402
     load_and_validate_learning_split,
 )
 from p2t.build_petct_matched_state_dataset import (  # noqa: E402
+    CONTROLLED_READY_PHASE,
+    CONTROLLED_READY_SCHEMA,
     CONTROLLED_STAGE_ORDER,
     MATCHED_STATE_SCHEMA,
 )
@@ -86,6 +88,10 @@ GOALS = {
     "REMOVE_SAME_LOCAL",
     "REMOVE_SAME_COMPLETE",
     "REMOVE_NEW_COMPLETE",
+}
+GOALS_BY_OPERATION = {
+    operation: {goal for goal in GOALS if goal.startswith(operation + "_")}
+    for operation in ("ADD", "REMOVE")
 }
 TARGETS = (
     "m0_evaluation",
@@ -294,17 +300,23 @@ def _validate_episode_data_ready(
     manifest_rows = load_jsonl(manifest_path)
     exclusion_rows = load_jsonl(Path(exclusions_record["path"]))
     manifest_attempt_ids = [str(row.get("attempt_id") or "") for row in manifest_rows]
-    excluded_attempt_ids = [str(row.get("attempt_id") or "") for row in exclusion_rows]
+    exclusion_keys = [
+        (str(row.get("attempt_id") or ""), str(row.get("operation") or ""))
+        for row in exclusion_rows
+    ]
     if (
         "" in manifest_attempt_ids
-        or "" in excluded_attempt_ids
-        or len(excluded_attempt_ids) != len(set(excluded_attempt_ids))
+        or any(key[0] == "" for key in exclusion_keys)
+        or len(exclusion_keys) != len(set(exclusion_keys))
     ):
-        raise RuntimeError(f"{lane} has missing/duplicate exclusion attempt IDs")
+        raise RuntimeError(
+            f"{lane} has missing/duplicate exclusion attempt+operation IDs"
+        )
     generated_ids = set(manifest_attempt_ids)
-    excluded_ids = set(excluded_attempt_ids)
-    if generated_ids & excluded_ids:
-        raise RuntimeError(f"{lane} generated/excluded attempt sets overlap")
+    excluded_ids = {key[0] for key in exclusion_keys}
+    fully_excluded_ids = {key[0] for key in exclusion_keys if key[1] == ""}
+    if generated_ids & fully_excluded_ids:
+        raise RuntimeError(f"{lane} generated/fully-excluded attempt sets overlap")
     attempts = document.get("attempts")
     if not isinstance(attempts, Mapping):
         raise RuntimeError(f"{lane} data-ready attempts are missing")
@@ -330,16 +342,33 @@ def _validate_episode_data_ready(
     ):
         raise RuntimeError(f"{lane} requested/generated/excluded closure mismatch")
     per_attempt = Counter(manifest_attempt_ids)
-    if any(count != goals_per_generated_attempt for count in per_attempt.values()):
-        raise RuntimeError(f"{lane} generated attempt episode multiplicity mismatch")
     if goals_per_generated_attempt == len(GOALS):
-        goals_by_attempt: dict[str, set[str]] = defaultdict(set)
+        # Plan A (D-2026-08-16, operation-triplet exclusions): a generated
+        # attempt carries one or two complete operation triplets, so the goal
+        # inventory is enforced per (attempt, operation) group.
+        goals_by_group: dict[tuple[str, str], set[str]] = defaultdict(set)
         for row in manifest_rows:
-            goals_by_attempt[str(row["attempt_id"])].add(str(row.get("goal") or ""))
-        if any(goals != GOALS for goals in goals_by_attempt.values()):
-            raise RuntimeError(f"{lane} generated attempt goal inventory mismatch")
-        if attempts.get("goals_per_generated_attempt") != len(GOALS):
-            raise RuntimeError(f"{lane} goals-per-attempt receipt mismatch")
+            goals_by_group[
+                (str(row["attempt_id"]), str(row.get("operation") or ""))
+            ].add(str(row.get("goal") or ""))
+        if any(
+            goals != GOALS_BY_OPERATION[operation]
+            for (_, operation), goals in goals_by_group.items()
+        ):
+            raise RuntimeError(
+                f"{lane} generated operation triplet inventory mismatch"
+            )
+        if attempts.get("goals_per_generated_operation") != len(
+            next(iter(GOALS_BY_OPERATION.values()))
+        ):
+            raise RuntimeError(f"{lane} goals-per-operation receipt mismatch")
+    else:
+        if any(
+            count != goals_per_generated_attempt for count in per_attempt.values()
+        ):
+            raise RuntimeError(
+                f"{lane} generated attempt episode multiplicity mismatch"
+            )
 
     expected_reason_summary: dict[str, Any] = {}
     reasons: dict[str, set[str]] = defaultdict(set)
@@ -683,7 +712,15 @@ def validate_controlled_episode_rows(
     if not groups:
         raise RuntimeError("controlled P2T manifest is empty")
     for group_id, group in groups.items():
-        if len(group) != len(GOALS) or {str(row.get("goal")) for row in group} != GOALS:
+        operations = {str(row.get("operation")) for row in group}
+        if len(operations) != 1:
+            raise RuntimeError(
+                f"matched group {group_id} mixes signed-cue operations"
+            )
+        operation = next(iter(operations))
+        if len(group) != len(GOALS_BY_OPERATION[operation]) or {
+            str(row.get("goal")) for row in group
+        } != GOALS_BY_OPERATION[operation]:
             raise RuntimeError(f"matched group {group_id} is not one complete legal triplet")
         invariant_keys = (
             "case_id",
@@ -2033,8 +2070,8 @@ def validate_pipeline(inputs_path: Path, target: str) -> dict[str, Any]:
         )
         controlled_ready = _validate_episode_data_ready(
             controlled_ready_path,
-            schema_version="PETCT-CONTROLLED-P2T-DATA-READY-v1.0",
-            phase="CONTROLLED_MATCHED_STATE_MATERIALIZATION",
+            schema_version=CONTROLLED_READY_SCHEMA,
+            phase=CONTROLLED_READY_PHASE,
             lane="controlled_p2t",
             strategy_mode="primary",
             selected_partitions=selected_partitions,

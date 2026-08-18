@@ -138,6 +138,16 @@ NATURAL_PROVENANCE_HASH_KEYS = (
     "input_pet_sha256",
     "input_gt_sha256",
 )
+# The v6 OOF has no canonical files for the legacy training-receipt hashes, so
+# the binding expresses their absence as explicit null (auditable absence, see
+# M-17).  A v5-era binding must still carry real digests for these three keys.
+NATURAL_PROVENANCE_NULLABLE_KEYS = frozenset(
+    {
+        "preprocess_ready_sha256",
+        "full_train_ready_sha256",
+        "fold_receipt_sha256",
+    }
+)
 
 
 RESIDUAL_COMPONENT_CONNECTIVITY_18 = ndimage.generate_binary_structure(3, 2)
@@ -678,7 +688,14 @@ def _visible_m0_provenance(
         if lane == "controlled"
         else NATURAL_VISIBLE_M0_PROVENANCE_KEYS
     )
-    visible = {key: provenance[key] for key in allowed if key in provenance}
+    # Null legacy receipt hashes are the auditable absence of a canonical file
+    # (v6 OOF); the visible projection omits absent fields while the evaluation
+    # document retains the explicit nulls for the audit trail.
+    visible = {
+        key: provenance[key]
+        for key in allowed
+        if key in provenance and provenance[key] is not None
+    }
     operation = visible.get("operation")
     if operation is not None and operation not in {"ADD", "REMOVE"}:
         raise EpisodeContractError("visible M0 provenance has invalid operation")
@@ -709,6 +726,10 @@ def _validate_m0_provenance(lane: str, provenance: dict[str, Any]) -> None:
         raise EpisodeContractError("natural OOF held_out_fold must be 0..4")
     for key in NATURAL_PROVENANCE_HASH_KEYS:
         value = provenance.get(key)
+        if value is None and key in NATURAL_PROVENANCE_NULLABLE_KEYS:
+            # Explicit null is the auditable absence of a legacy training
+            # receipt in the v6 OOF lineage; any other null stays invalid.
+            continue
         if (
             not isinstance(value, str)
             or len(value) != 64

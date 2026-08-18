@@ -31,6 +31,10 @@ from baseline.validate_petct_m0_oof import (  # noqa: E402
 )
 from common.petct_learning import load_jsonl, sha256_file  # noqa: E402
 from common.petct_route_a_core import residual_masks, validate_patient_folds  # noqa: E402
+from common.petct_mainline_lineage import (  # noqa: E402
+    M0_V6_OOF_SCHEMA,
+    validate_m0_v6_oof_ready,
+)
 from common.petct_test_access import (  # noqa: E402
     TestAccessError,
     add_leaf_test_access_arguments,
@@ -265,12 +269,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     _, learning_split = load_and_validate_learning_split(
         args.learning_split, source_rows, experiment_config
     )
-    validated = validate_oof_ready_receipt_only(args.oof_ready)
+    with args.oof_ready.open("r", encoding="utf-8") as stream:
+        oof_schema = json.load(stream).get("schema_version")
+    validated = (
+        validate_m0_v6_oof_ready(args.oof_ready)
+        if oof_schema == M0_V6_OOF_SCHEMA
+        else validate_oof_ready_receipt_only(args.oof_ready)
+    )
     cohort = validate_patient_folds(source_rows)
     if cohort["case_count"] != 597 or cohort["patient_count"] != 378:
         raise RuntimeError("natural residual cohort must be exactly 597 cases / 378 patients")
     source = {str(row["case_id"]): row for row in source_rows}
-    if len(source) != len(source_rows) or set(source) != set(validated["cases"]):
+    if len(source) != len(source_rows):
+        raise RuntimeError("case manifest has duplicate case IDs")
+    if oof_schema == M0_V6_OOF_SCHEMA:
+        expected_learning = {
+            case_id
+            for case_id in source
+            if learning_split["case_to_partition"][case_id] in {"train", "val"}
+        }
+        if set(validated["cases"]) != expected_learning:
+            raise RuntimeError(
+                "M0 v6 OOF inventory must equal the frozen TRAIN/VAL learning cohort"
+            )
+        if selected_partitions != {"train", "val"}:
+            raise RuntimeError("R13 M0 v6 residuals require explicit TRAIN/VAL only")
+    elif set(source) != set(validated["cases"]):
         raise RuntimeError("case manifest must match the complete OOF_READY inventory")
     experiment_config_sha256 = sha256_file(args.experiment_config)
     test_access_sha256 = (
@@ -295,13 +319,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 continue
             oof = validated["cases"][case_id]
             patient_id = str(row["patient_id"])
-            if patient_id.casefold() != oof["patient_id"] or int(row["held_out_fold"]) != int(oof["held_out_fold"]):
-                raise RuntimeError("case patient/fold differs from OOF_READY")
+            if patient_id.casefold() != oof["patient_id"]:
+                raise RuntimeError("case patient differs from OOF_READY")
+            source_record_for_binding = row
+            if oof_schema == M0_V6_OOF_SCHEMA:
+                source_record_for_binding = {
+                    **row,
+                    "source_manifest_held_out_fold": int(row["held_out_fold"]),
+                    "held_out_fold": int(oof["held_out_fold"]),
+                }
+            elif int(row["held_out_fold"]) != int(oof["held_out_fold"]):
+                raise RuntimeError("case fold differs from OOF_READY")
             truth_binding = validate_oof_case_leaf(
                 validated,
                 ready_path=args.oof_ready,
                 case_id=case_id,
-                source_record=row,
+                source_record=source_record_for_binding,
             )
             m0_path = Path(truth_binding["m0"]["path"])
             provenance = build_natural_oof_binding_from_validated(
@@ -332,7 +365,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             write_binary_nifti(fp_staged_path, residual["fp"], gt_image)
             rows.append(
                 {
-                    **{key: value for key, value in row.items() if key != "partition"},
+                    **{
+                        key: value
+                        for key, value in source_record_for_binding.items()
+                        if key != "partition"
+                    },
                     "partition": partition,
                     "learning_split_sha256": learning_split["split_sha256"],
                     "learning_split_receipt": {

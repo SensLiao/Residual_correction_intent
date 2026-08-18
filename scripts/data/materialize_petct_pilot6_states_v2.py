@@ -159,9 +159,11 @@ def construct_pilot6_states_v2(
       REMOVE_SAME_COMPLETE m0 = gt plus full FP shell
       REMOVE_NEW_COMPLETE m0 = FP shell only
 
-    Returns the states dict keyed by goal; raises Pilot6V2Error when the
-    LOCAL area floor or the COMPLETE far-voxel requirement fails (the
-    builder converts that into a counted exclusion).
+    Failures are recorded per goal (``goal_failures``) so the builder can keep
+    the sibling operation triplet instead of discarding the whole case
+    (D-2026-08-16 plan A, operation-triplet granularity).  Shared structural
+    preconditions — shape/subset/disjoint masks and one-slice scribble
+    geometry — remain protocol-level Pilot6V2Error and still exclude the case.
     """
 
     truth = np.asarray(gt) > 0
@@ -178,27 +180,32 @@ def construct_pilot6_states_v2(
     local_fn, far_fn = euclidean_local_mask(
         add_component, scribble_add, spacing, local_radius_mm
     )
-    area_fn = float(local_fn.sum()) * spacing[0] * spacing[1]
-    if area_fn < float(minimum_local_area_mm2):
-        raise Pilot6V2Error(
-            "ADD SAME_LOCAL candidate is below the minimum physical area"
-        )
-    if not far_fn:
-        raise Pilot6V2Error("ADD COMPLETE requires far residual voxels on the scribble slice")
-
     local_fp, far_fp = euclidean_local_mask(
         remove_component, scribble_remove, spacing, local_radius_mm
     )
-    area_fp = float(local_fp.sum()) * spacing[0] * spacing[1]
-    if area_fp < float(minimum_local_area_mm2):
-        raise Pilot6V2Error(
-            "REMOVE SAME_LOCAL candidate is below the minimum physical area"
-        )
-    if not far_fp:
-        raise Pilot6V2Error("REMOVE COMPLETE requires far residual voxels on the scribble slice")
 
     z_add = int(next(iter({int(c[2]) for c in scribble_add})))
     z_remove = int(next(iter({int(c[2]) for c in scribble_remove})))
+
+    failures: Dict[str, str] = {}
+    area_fn = float(local_fn.sum()) * spacing[0] * spacing[1]
+    if area_fn < float(minimum_local_area_mm2):
+        failures["ADD_SAME_LOCAL"] = (
+            "ADD SAME_LOCAL candidate is below the minimum physical area"
+        )
+    if not far_fn:
+        failures["ADD_SAME_COMPLETE"] = (
+            "ADD COMPLETE requires far residual voxels on the scribble slice"
+        )
+    area_fp = float(local_fp.sum()) * spacing[0] * spacing[1]
+    if area_fp < float(minimum_local_area_mm2):
+        failures["REMOVE_SAME_LOCAL"] = (
+            "REMOVE SAME_LOCAL candidate is below the minimum physical area"
+        )
+    if not far_fp:
+        failures["REMOVE_SAME_COMPLETE"] = (
+            "REMOVE COMPLETE requires far residual voxels on the scribble slice"
+        )
 
     def minus_slice(base: np.ndarray, local_mask: np.ndarray, z: int) -> np.ndarray:
         out = base.copy()
@@ -228,28 +235,63 @@ def construct_pilot6_states_v2(
         cap[:, :, cap_z] = component[:, :, cap_z]
         return cap
 
-    cap = _retained_cap(add_component, z_add)
-    fn_complete = add_component & ~cap
-    m0_add_local = minus_slice(truth, local_fn, z_add)
-    m0_add_complete = truth & ~fn_complete
+    cap = None
+    if "ADD_SAME_COMPLETE" not in failures:
+        try:
+            cap = _retained_cap(add_component, z_add)
+        except Pilot6V2Error as exc:
+            failures["ADD_SAME_COMPLETE"] = str(exc)
+
+    candidates: Dict[str, Dict[str, Any]] = {}
+    if "ADD_SAME_LOCAL" not in failures:
+        m0_add_local = minus_slice(truth, local_fn, z_add)
+        candidates["ADD_SAME_LOCAL"] = {
+            "m0": m0_add_local,
+            "residual": truth & ~m0_add_local,
+            "operation": "ADD",
+        }
+    if "ADD_SAME_COMPLETE" not in failures:
+        fn_complete = add_component & ~cap
+        m0_add_complete = truth & ~fn_complete
+        candidates["ADD_SAME_COMPLETE"] = {
+            "m0": m0_add_complete,
+            "residual": fn_complete,
+            "operation": "ADD",
+        }
     m0_add_new = truth & ~add_component
-    m0_remove_local = plus_slice(truth, local_fp, z_remove)
-    m0_remove_complete = truth | remove_component
+    candidates["ADD_NEW_COMPLETE"] = {
+        "m0": m0_add_new,
+        "residual": add_component,
+        "operation": "ADD",
+    }
+    if "REMOVE_SAME_LOCAL" not in failures:
+        m0_remove_local = plus_slice(truth, local_fp, z_remove)
+        candidates["REMOVE_SAME_LOCAL"] = {
+            "m0": m0_remove_local,
+            "residual": m0_remove_local & ~truth,
+            "operation": "REMOVE",
+        }
+    if "REMOVE_SAME_COMPLETE" not in failures:
+        m0_remove_complete = truth | remove_component
+        candidates["REMOVE_SAME_COMPLETE"] = {
+            "m0": m0_remove_complete,
+            "residual": remove_component,
+            "operation": "REMOVE",
+        }
     m0_remove_new = remove_component.copy()
+    candidates["REMOVE_NEW_COMPLETE"] = {
+        "m0": m0_remove_new,
+        "residual": remove_component,
+        "operation": "REMOVE",
+    }
 
     states: Dict[str, Dict[str, Any]] = {}
-    for goal, m0, residual, operation in (
-        ("ADD_SAME_LOCAL", m0_add_local, truth & ~m0_add_local, "ADD"),
-        ("ADD_SAME_COMPLETE", m0_add_complete, fn_complete, "ADD"),
-        ("ADD_NEW_COMPLETE", m0_add_new, add_component, "ADD"),
-        ("REMOVE_SAME_LOCAL", m0_remove_local, m0_remove_local & ~truth, "REMOVE"),
-        ("REMOVE_SAME_COMPLETE", m0_remove_complete, remove_component, "REMOVE"),
-        ("REMOVE_NEW_COMPLETE", m0_remove_new, remove_component, "REMOVE"),
-    ):
+    for goal, candidate in candidates.items():
+        m0 = candidate["m0"]
+        residual = candidate["residual"]
+        operation = candidate["operation"]
         residual_bool = np.asarray(residual) > 0
-        expected = (
-            (truth & ~m0) if operation == "ADD" else (m0 & ~truth)
-        )
+        expected = (truth & ~m0) if operation == "ADD" else (m0 & ~truth)
         if not np.array_equal(expected, residual_bool):
             raise Pilot6V2Error("operation residual formula mismatch for %s" % goal)
         states[goal] = {
@@ -258,10 +300,59 @@ def construct_pilot6_states_v2(
             "operation_residual": np.ascontiguousarray(residual_bool, dtype=np.uint8),
             "authorized_target": np.ascontiguousarray(residual_bool, dtype=np.uint8),
         }
+    # The official re-derivation labels the goal's source mask (truth for ADD,
+    # the constructed m0 for REMOVE) and requires the scribble to bind exactly
+    # one non-background component; the goal's SAME/NEW class is determined by
+    # whether that component retains the counterpart.  Construction must
+    # guarantee both preconditions per goal: a violation here is a per-goal
+    # eligibility outcome (goal_failures -> per-operation exclusion), and any
+    # remaining re-derivation disagreement stays a system failure in the
+    # builder.  Without this mirror a fragmented local FP shell (e.g. a
+    # 3-iteration shell whose scribble-slice local part splits into pieces
+    # that touch different components) aborts the whole build instead of
+    # being excluded (R9 failure, case psma_995fbaec49f131ce_2016-11-12).
+    for goal in list(states):
+        state = states[goal]
+        operation = state["operation"]
+        source = truth if operation == "ADD" else state["m0"] > 0
+        counterpart = state["m0"] > 0 if operation == "ADD" else truth
+        scribble = scribble_add if operation == "ADD" else scribble_remove
+        labels, _ = ndimage.label(source, structure=STRUCTURE_18)
+        bound = {int(labels[tuple(int(v) for v in coord)]) for coord in scribble}
+        if 0 in bound or len(bound) != 1:
+            failures[goal] = f"{goal}: cue must bind exactly one source component"
+            del states[goal]
+            continue
+        component = labels == next(iter(bound))
+        retains_counterpart = bool(np.any(component & counterpart))
+        expects_same = goal.split("_")[1].startswith("SAME")
+        if retains_counterpart != expects_same:
+            failures[goal] = (
+                f"{goal}: cue-bound component counterpart flag does not match"
+                " the constructed goal"
+            )
+            del states[goal]
+            continue
+        if goal.endswith("SAME_LOCAL"):
+            # The re-derivation measures the LOCAL area and the authorized
+            # mask on the bound component only; when the local subset splits
+            # across components the derive would re-raise or disagree even
+            # though binding itself is unique.  Require the bound component
+            # to contain the whole local subset so area/authorized checks
+            # coincide by construction.
+            local = local_fn if operation == "ADD" else local_fp
+            z_slice = z_add if operation == "ADD" else z_remove
+            if not np.all(local <= component[:, :, z_slice]):
+                failures[goal] = (
+                    f"{goal}: local subset is not contained in the"
+                    " cue-bound component"
+                )
+                del states[goal]
     return {
         "schema_version": PILOT6_V2_SCHEMA,
-        "eligible": True,
+        "eligible": bool(states),
         "states": states,
+        "goal_failures": failures,
     }
 
 
