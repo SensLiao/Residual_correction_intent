@@ -56,6 +56,17 @@ TEST_ACCESS_POLICIES = {
         "exactly-once-after-all-v2-development-freezes",
         "exactly-once-after-v2-freeze",
     ),
+    # v3.0 mirrors the sealed v3 config exactly (registered 2026-08-18,
+    # audit-data-corpus MEDIUM-1).  statistics.test_access is None in the
+    # sealed v3 config: the statistics partition rides the SAME exactly-once
+    # final-freeze grant as the dataset partition rather than a separate
+    # policy string.  The formal closed-loop protocol amendment remains a
+    # pending director decision; this registration only unblocks the grant
+    # path for the config that is actually frozen.
+    "PETCT-ROUTE-A-EXPERIMENT-v3.0": (
+        "exactly-once-after-all-v2-development-freezes",
+        None,
+    ),
 }
 
 

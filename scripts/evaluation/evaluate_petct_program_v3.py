@@ -36,6 +36,10 @@ from common.petct_program_learning import (  # noqa: E402
     load_jsonl,
     load_label_manifest,
 )
+from common.petct_mainline_lineage import (  # noqa: E402
+    MAINLINE_SOURCE,
+    validate_r13_lineage_receipt,
+)
 
 EVAL_SCHEMA = "PETCT-PROGRAM-EVAL-v1.1"
 ERROR_SENTINEL = -1
@@ -180,6 +184,7 @@ def _compiler_metrics(
     true_ids, pred_ids, patients = [], [], []
     statuses: dict[str, int] = {}
     pointer_scores = []
+    matched_mode = any("matched_state_group_id" in row for row in expected)
     group_rows: dict[str, list[tuple[int, int]]] = {}
     for row in expected:
         episode_id = str(row["episode_id"])
@@ -193,8 +198,9 @@ def _compiler_metrics(
         true_ids.append(gold_id)
         pred_ids.append(predicted_id)
         patients.append(str(row["patient_id"]))
-        group_key = "%s|%s" % (row["matched_state_group_id"], row["operation"])
-        group_rows.setdefault(group_key, []).append((gold_id, predicted_id))
+        if matched_mode:
+            group_key = "%s|%s" % (row["matched_state_group_id"], row["operation"])
+            group_rows.setdefault(group_key, []).append((gold_id, predicted_id))
         if row["operation"] == "ADD" and row["goal"] != "ADD_NEW_COMPLETE":
             target = pointer_targets.get(episode_id)
             if target is None:
@@ -207,6 +213,9 @@ def _compiler_metrics(
             )
     metric = _patient_balanced_macro_f1(true_ids, pred_ids, patients, list(range(6)))
     pair_total = pair_correct = triplet_total = triplet_correct = 0
+    # Matched pair/triplet accuracy only exists in the controlled matched-state
+    # lane; natural single-round labels carry no matched_state_group_id and
+    # report None with zero counts instead.
     for values in group_rows.values():
         if len(values) != 3 or len({truth for truth, _ in values}) != 3:
             raise LearningContractError("matched same-operation group is not a three-family set")
@@ -414,6 +423,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--predictions", type=Path, required=True)
     parser.add_argument("--prediction-receipt", type=Path, required=True)
+    parser.add_argument("--lineage-receipt", type=Path, required=True)
     parser.add_argument("--labels", type=Path, required=True)
     parser.add_argument("--inference-manifest", type=Path, required=True)
     parser.add_argument("--candidates", type=Path, required=True)
@@ -434,8 +444,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.output.exists() or args.output.is_symlink():
         parser.error("output already exists")
+    lineage = validate_r13_lineage_receipt(args.lineage_receipt)
     prediction_receipt = _verify_prediction_receipt(args.prediction_receipt, args.predictions)
-    labels = load_label_manifest(args.labels)
+    if (
+        prediction_receipt.get("source_m0_lineage") != MAINLINE_SOURCE
+        or prediction_receipt.get("lineage_receipt_sha256")
+        != lineage["receipt_sha256"]
+    ):
+        raise LearningContractError("compiler predictions are not R13-lineage bound")
+    labels = load_label_manifest(args.labels, require_matched_groups=False)
     label_rows = list(labels.values())
     visible = _unique_by_episode(load_jsonl(args.inference_manifest), "inference manifest")
     candidates = _tree_records(args.candidates)
@@ -460,6 +477,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.editor_receipt is None:
             parser.error("--editor-predictions requires --editor-receipt")
         editor_receipt = _verify_editor_receipt(args.editor_receipt, args.editor_predictions)
+        if (
+            editor_receipt.get("source_m0_lineage") != MAINLINE_SOURCE
+            or editor_receipt.get("lineage_receipt_sha256")
+            != lineage["receipt_sha256"]
+        ):
+            raise LearningContractError("editor predictions are not R13-lineage bound")
         if editor_receipt["program_source"] != "predicted_compiler":
             raise LearningContractError("primary editor artifact must use predicted calls")
         editor = _evaluate_editor_manifest(args.editor_predictions, expected, visible, audit)
@@ -471,6 +494,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         oracle_receipt = _verify_editor_receipt(
             args.oracle_editor_receipt, args.oracle_editor_predictions
         )
+        if oracle_receipt.get("lineage_receipt_sha256") != lineage["receipt_sha256"]:
+            raise LearningContractError("oracle editor receipt binds another lineage")
         if oracle_receipt["program_source"] != "gold_oracle_ceiling":
             raise LearningContractError("oracle editor artifact is not label-declared")
         if oracle_receipt["editor_checkpoint_sha256"] != editor_receipt["editor_checkpoint_sha256"]:
@@ -488,6 +513,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = {
         "schema_version": EVAL_SCHEMA,
         "partition": args.partition,
+        "source_m0_lineage": MAINLINE_SOURCE,
+        "lineage_receipt_sha256": lineage["receipt_sha256"],
         "compiler": compiler,
         "editor_predicted_calls": editor,
         "editor_gold_call_ceiling": oracle_editor,

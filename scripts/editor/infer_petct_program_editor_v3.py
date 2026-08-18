@@ -32,6 +32,10 @@ from common.petct_program_learning import (  # noqa: E402
     operation_id_from_row,
     program_collate,
 )
+from common.petct_mainline_lineage import (  # noqa: E402
+    MAINLINE_SOURCE,
+    validate_r13_lineage_receipt,
+)
 from common.petct_program_models import (  # noqa: E402
     NULL_FAMILY_ID,
     ProgramCompilerNet,
@@ -207,6 +211,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--program-predictions", type=Path, required=True)
     parser.add_argument("--program-receipt", type=Path, required=True)
     parser.add_argument("--editor-checkpoint", type=Path, required=True)
+    parser.add_argument("--lineage-receipt", type=Path, required=True)
     parser.add_argument("--compiler-checkpoint", type=Path, default=None)
     parser.add_argument("--partition", choices=("train", "val"), required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -218,6 +223,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     outputs = (args.output_dir, args.output_manifest, args.receipt)
     if any(path.exists() or path.is_symlink() for path in outputs):
         parser.error("output already exists")
+    lineage = validate_r13_lineage_receipt(args.lineage_receipt)
     program_receipt = _verify_call_receipt(
         args.program_receipt, args.program_predictions
     )
@@ -229,6 +235,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         or checkpoint.get("episodes_sha256") != _sha256_file(args.episodes)
         or checkpoint.get("candidates_tree_sha256")
         != program_receipt.get("candidates_tree_sha256")
+        or checkpoint.get("source_m0_lineage") != MAINLINE_SOURCE
+        or checkpoint.get("lineage_receipt_sha256") != lineage["receipt_sha256"]
     ):
         raise LearningContractError("editor checkpoint is not bound to inference manifest")
     arm = str(checkpoint.get("arm") or "")
@@ -326,6 +334,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "compiler_prediction_receipt_sha256": _sha256_file(args.program_receipt),
         "compiler_checkpoint_sha256": program_receipt.get("checkpoint_sha256"),
         "program_source": program_receipt["program_source"],
+        "source_m0_lineage": MAINLINE_SOURCE,
+        "lineage_receipt_sha256": lineage["receipt_sha256"],
         "label_lane_opened": program_receipt["program_source"] == "gold_oracle_ceiling",
     }
     args.receipt.parent.mkdir(parents=True, exist_ok=True)

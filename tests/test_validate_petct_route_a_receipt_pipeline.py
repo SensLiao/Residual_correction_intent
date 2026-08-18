@@ -26,8 +26,11 @@ from common.petct_learning import (  # noqa: E402
     P2T_METRICS_SCHEMA,
 )
 from orchestration.validate_petct_route_a_receipt_pipeline import (  # noqa: E402
+    CONTROLLED_READY_PHASE,
+    CONTROLLED_READY_SCHEMA,
     CONTROLLED_STAGE_ORDER,
     GENERATION_STAGE_ORDER,
+    GOALS_BY_OPERATION,
     MATCHED_STATE_SCHEMA,
     PIPELINE_RECEIPT_SCHEMA,
     _canonical_json_hash,
@@ -79,7 +82,6 @@ def _controlled_rows():
     base = {
         "schema_version": MATCHED_STATE_SCHEMA,
         "lane": "controlled_p2t",
-        "matched_state_group_id": "matched-1",
         "case_id": "case-1",
         "patient_id": "patient-1",
         "partition": "train",
@@ -90,25 +92,20 @@ def _controlled_rows():
         "learning_split_sha256": "c" * 64,
         "scribble_generation": {"stage_order": list(CONTROLLED_STAGE_ORDER)},
     }
-    return [
-        {
-            **base,
-            "episode_id": f"episode-{index}",
-            "goal": goal,
-            "m0_sha256": str((index + 1) // 2) * 64,
-        }
-        for index, goal in enumerate(
-            [
-                "ADD_SAME_LOCAL",
-                "REMOVE_SAME_LOCAL",
-                "ADD_SAME_COMPLETE",
-                "REMOVE_SAME_COMPLETE",
-                "ADD_NEW_COMPLETE",
-                "REMOVE_NEW_COMPLETE",
-            ],
-            start=1,
-        )
-    ]
+    rows = []
+    for operation, goals in GOALS_BY_OPERATION.items():
+        for index, goal in enumerate(sorted(goals), start=1):
+            rows.append(
+                {
+                    **base,
+                    "matched_state_group_id": f"matched-{operation.lower()}",
+                    "operation": operation,
+                    "episode_id": f"episode-{operation.lower()}-{index}",
+                    "goal": goal,
+                    "m0_sha256": f"{operation[0]}{index}" * 32,
+                }
+            )
+    return rows
 
 
 def test_controlled_receipt_requires_one_shared_scribble_and_three_distinct_m0() -> None:
@@ -119,7 +116,7 @@ def test_controlled_receipt_requires_one_shared_scribble_and_three_distinct_m0()
         case_to_partition={"case-1": "train"},
     )
 
-    assert result["groups"] == 1
+    assert result["groups"] == 2
     assert result["episodes"] == 6
 
 
@@ -306,6 +303,132 @@ def test_episode_data_ready_revalidates_attempt_denominator_and_output_tree(
             },
             goals_per_generated_attempt=1,
         )
+
+
+def test_controlled_data_ready_accepts_partial_attempt_operation_exclusion(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    inputs = {}
+    for name in ("case_manifest", "learning_split", "experiment_config"):
+        path = run_root / f"{name}.json"
+        path.write_text(f"{name}\n", encoding="utf-8")
+        inputs[name] = path
+    manifest = run_root / "controlled_episodes.jsonl"
+    exclusions = run_root / "controlled_exclusions.jsonl"
+    rows = [
+        {
+            "attempt_id": "attempt-partial",
+            "operation": "ADD",
+            "goal": goal,
+        }
+        for goal in sorted(GOALS_BY_OPERATION["ADD"])
+    ]
+    manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    exclusions.write_text(
+        json.dumps(
+            {
+                "attempt_id": "attempt-partial",
+                "operation": "REMOVE",
+                "reason": "CONTROLLED_STATE_INELIGIBLE:REMOVE",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    trees = {}
+    for name in ("states", "visible", "evaluation"):
+        directory = run_root / name
+        directory.mkdir()
+        leaf = directory / "leaf.json"
+        leaf.write_text("{}\n", encoding="utf-8")
+        entry = {
+            "path": "leaf.json",
+            "sha256": _sha(leaf),
+            "bytes": leaf.stat().st_size,
+        }
+        trees[name] = {
+            "path": str(directory.resolve()),
+            "file_count": 1,
+            "bytes": leaf.stat().st_size,
+            "tree_sha256": _canonical_json_hash([entry]),
+        }
+    ready = {
+        "schema_version": CONTROLLED_READY_SCHEMA,
+        "status": "PASS",
+        "phase": CONTROLLED_READY_PHASE,
+        "lane": "controlled_p2t",
+        "strategy_mode": "primary",
+        "selected_partitions": ["train", "val"],
+        "inputs": {
+            "case_manifest": _full_record(inputs["case_manifest"]),
+            "learning_split": _full_record(inputs["learning_split"]),
+            "experiment_config": _full_record(inputs["experiment_config"]),
+        },
+        "outputs": {
+            "manifest": _full_record(manifest),
+            "exclusions": _full_record(exclusions),
+            "states": trees["states"],
+            "visible": trees["visible"],
+            "evaluation": trees["evaluation"],
+        },
+        "cohort": {
+            "source": _bucket(["case-1"], ["patient-1"]),
+            "selected_source": _bucket(["case-1"], ["patient-1"]),
+            "eligible": _bucket(["case-1"], ["patient-1"]),
+            "excluded": _bucket([], []),
+            "partially_excluded": _bucket(["case-1"], ["patient-1"]),
+            "with_excluded_attempts": _bucket(["case-1"], ["patient-1"]),
+        },
+        "attempts": {
+            "requested_count": 1,
+            "requested_ids": ["attempt-partial"],
+            "requested_ids_sha256": _canonical_json_hash(["attempt-partial"]),
+            "generated_count": 1,
+            "generated_ids": ["attempt-partial"],
+            "generated_ids_sha256": _canonical_json_hash(["attempt-partial"]),
+            "excluded_count": 1,
+            "excluded_ids": ["attempt-partial"],
+            "excluded_ids_sha256": _canonical_json_hash(["attempt-partial"]),
+            "episodes": 3,
+            "goals_per_generated_operation": 3,
+        },
+        "exclusions_by_reason": {
+            "CONTROLLED_STATE_INELIGIBLE:REMOVE": {
+                "count": 1,
+                "attempt_ids": ["attempt-partial"],
+                "attempt_ids_sha256": _canonical_json_hash(["attempt-partial"]),
+            }
+        },
+    }
+    ready["binding_sha256"] = _canonical_json_hash(ready)
+    ready_path = run_root / "CONTROLLED_DATA_READY.json"
+    ready_path.write_text(json.dumps(ready) + "\n", encoding="utf-8")
+
+    validated = _validate_episode_data_ready(
+        ready_path,
+        schema_version=CONTROLLED_READY_SCHEMA,
+        phase=CONTROLLED_READY_PHASE,
+        lane="controlled_p2t",
+        strategy_mode="primary",
+        selected_partitions={"train", "val"},
+        manifest_path=manifest,
+        run_root=run_root,
+        expected_input_files={
+            "case_manifest": inputs["case_manifest"],
+            "learning_split": inputs["learning_split"],
+            "experiment_config": inputs["experiment_config"],
+        },
+        goals_per_generated_attempt=6,
+    )
+    assert validated["validated_attempts"] == {
+        "requested": 1,
+        "generated": 1,
+        "excluded": 1,
+    }
 
 
 def test_p2t_result_gate_requires_every_seed_by_ablation_cell() -> None:

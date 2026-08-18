@@ -55,6 +55,10 @@ COMPONENT_DESCRIPTOR_NAMES = (
 
 # This is deliberately an allowlist rather than a denylist.  Adding any
 # field to an inference manifest is therefore a reviewed contract change.
+# Reviewed addition (R13 mainline, 2026-08-18): the program-manifest
+# materializer stamps rows with the R13 identity and binds the visible
+# candidate artifacts; all six fields are non-label-derived and pass the
+# visible firewall before publication.
 INFERENCE_MANIFEST_ALLOWED_FIELDS = frozenset(
     {
         "schema_version",
@@ -65,6 +69,12 @@ INFERENCE_MANIFEST_ALLOWED_FIELDS = frozenset(
         "visible_sha256",
         "geometry",
         "center_z",
+        "candidate_json",
+        "candidate_sha256",
+        "dataset_id",
+        "source_m0_lineage",
+        "round_index",
+        "scribble_count",
     }
 )
 INFERENCE_MANIFEST_REQUIRED_FIELDS = frozenset(
@@ -171,7 +181,9 @@ def _validate_inference_row(row: Mapping[str, Any]) -> None:
         )
 
 
-def load_label_manifest(path: Path) -> Dict[str, Dict[str, Any]]:
+def load_label_manifest(
+    path: Path, *, require_matched_groups: bool = True
+) -> Dict[str, Dict[str, Any]]:
     rows = load_jsonl(path)
     labels: Dict[str, Dict[str, Any]] = {}
     matched_groups: Dict[str, List[Tuple[str, str]]] = {}
@@ -183,9 +195,11 @@ def load_label_manifest(path: Path) -> Dict[str, Dict[str, Any]]:
             raise LearningContractError("unknown label manifest schema")
         required = {
             "case_id", "patient_id", "partition", "goal", "operation",
-            "matched_state_group_id", "evaluation_npz", "evaluation_sha256",
+            "evaluation_npz", "evaluation_sha256",
             "learning_split_sha256",
         }
+        if require_matched_groups:
+            required.add("matched_state_group_id")
         if not required.issubset(row):
             raise LearningContractError(
                 "label manifest row %s is incomplete" % episode_id
@@ -197,10 +211,11 @@ def load_label_manifest(path: Path) -> Dict[str, Dict[str, Any]]:
         operation = str(row["operation"])
         goal = str(row["goal"])
         goal_to_local_family_id(goal, operation)
-        group_id = str(row["matched_state_group_id"] or "").strip()
-        if not group_id:
-            raise LearningContractError("label manifest has an empty matched group id")
-        matched_groups.setdefault(group_id, []).append((operation, goal))
+        group_id = str(row.get("matched_state_group_id") or "").strip()
+        if require_matched_groups:
+            if not group_id:
+                raise LearningContractError("label manifest has an empty matched group id")
+            matched_groups.setdefault(group_id, []).append((operation, goal))
         labels[episode_id] = dict(row)
     for group_id, entries in matched_groups.items():
         operations = {operation for operation, _ in entries}
@@ -428,7 +443,11 @@ class InferenceEpisodeDataset(Dataset):
                 raise LearningContractError("visible/label operation mismatch")
             goal = str(label["goal"])
             output["patient_id"] = str(label["patient_id"])
-            output["group_id"] = str(label["matched_state_group_id"])
+            output["group_id"] = str(
+                label.get("matched_state_group_id")
+                or label.get("episode_family_id")
+                or episode_id
+            )
             output["goal"] = goal
             output["family_gold"] = torch.tensor(
                 goal_to_local_family_id(goal, operation), dtype=torch.long

@@ -87,6 +87,40 @@ def test_production_v2_test_access_policy_pair_is_accepted(tmp_path: Path) -> No
     assert split_record["path"] == str(split.resolve())
 
 
+def test_production_v3_test_access_policy_pair_is_accepted(tmp_path: Path) -> None:
+    """The sealed v3 config carries the v2 development policy string and a
+    None statistics policy (statistics rides the same final-freeze grant).
+    Registering exactly this pair unblocks the grant path (MEDIUM-1 fix)."""
+
+    config, split = _write_contracts(tmp_path)
+    document = json.loads(config.read_text(encoding="utf-8"))
+    document["schema_version"] = "PETCT-ROUTE-A-EXPERIMENT-v3.0"
+    document["dataset"]["learning_split"]["test_access"] = (
+        "exactly-once-after-all-v2-development-freezes"
+    )
+    document["statistics"]["test_access"] = None
+    config.write_text(json.dumps(document), encoding="utf-8")
+
+    _, _, config_record, split_record = _validate_config_and_split(config, split)
+
+    assert config_record["path"] == str(config.resolve())
+    assert split_record["path"] == str(split.resolve())
+
+
+def test_v3_policy_rejects_wrong_statistics_string(tmp_path: Path) -> None:
+    config, split = _write_contracts(tmp_path)
+    document = json.loads(config.read_text(encoding="utf-8"))
+    document["schema_version"] = "PETCT-ROUTE-A-EXPERIMENT-v3.0"
+    document["dataset"]["learning_split"]["test_access"] = (
+        "exactly-once-after-all-v2-development-freezes"
+    )
+    document["statistics"]["test_access"] = "exactly-once-after-v2-freeze"
+    config.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(TestAccessError, match="test-access policy"):
+        _validate_config_and_split(config, split)
+
+
 @pytest.mark.parametrize(
     ("development_policy", "statistics_policy"),
     (

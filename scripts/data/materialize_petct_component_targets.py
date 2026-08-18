@@ -117,6 +117,49 @@ def _load_jsonl(path: Path, *, allow_empty: bool = False) -> list[Dict[str, Any]
     return rows
 
 
+def join_audit_source_evaluations(
+    rows: Sequence[Mapping[str, Any]], audit_rows: Sequence[Mapping[str, Any]]
+) -> list[Dict[str, Any]]:
+    """Restore the private source mapping only for label-lane target derivation.
+
+    The R12 controlled manifest deliberately omits ``source_evaluation``.  Its
+    audit manifest keeps the same record content behind an opaque episode ID.
+    This join is confined to this target materializer and never writes the
+    restored mapping into a visible manifest or candidate sidecar.
+    """
+
+    audit_by_episode: Dict[str, Mapping[str, Any]] = {}
+    for audit_row in audit_rows:
+        episode_id = str(audit_row.get("episode_id") or "")
+        source_record = audit_row.get("source_record")
+        if not episode_id or not isinstance(source_record, Mapping):
+            raise ValueError("audit row lacks episode_id/source_record")
+        if episode_id in audit_by_episode:
+            raise ValueError("duplicate audit episode_id: %s" % episode_id)
+        if str(source_record.get("episode_id") or "") != episode_id:
+            raise ValueError("audit source record episode_id mismatch: %s" % episode_id)
+        if str(audit_row.get("source_record_sha256") or "") != _sha256_json(source_record):
+            raise ValueError("audit source record hash mismatch: %s" % episode_id)
+        audit_by_episode[episode_id] = source_record
+
+    joined: list[Dict[str, Any]] = []
+    for row in rows:
+        episode_id = str(row.get("episode_id") or "")
+        source_record = audit_by_episode.get(episode_id)
+        if source_record is None:
+            raise ValueError("missing audit source record: %s" % episode_id)
+        for field in ("partition", "operation", "goal"):
+            if str(row.get(field) or "") != str(source_record.get(field) or ""):
+                raise ValueError("audit/source %s mismatch for %s" % (field, episode_id))
+        source_evaluation = source_record.get("source_evaluation")
+        if not isinstance(source_evaluation, Mapping):
+            raise ValueError("audit source_evaluation mapping missing: %s" % episode_id)
+        merged = dict(row)
+        merged["source_evaluation"] = dict(source_evaluation)
+        joined.append(merged)
+    return joined
+
+
 def _write_json_exclusive(path: Path, value: Mapping[str, Any]) -> None:
     with path.open("x", encoding="utf-8", newline="\n") as stream:
         json.dump(
@@ -363,6 +406,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="learning tensor manifest (jsonl)",
     )
     parser.add_argument("--candidate-summary", type=Path, required=True)
+    parser.add_argument(
+        "--audit-manifest",
+        type=Path,
+        default=None,
+        help="optional audit JSONL supplying source_evaluation for a redacted manifest",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--summary", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -370,6 +419,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("missing learning manifest: %s" % args.episodes)
     if not args.candidate_summary.is_file():
         parser.error("missing candidate summary: %s" % args.candidate_summary)
+    if args.audit_manifest is not None and not args.audit_manifest.is_file():
+        parser.error("missing audit manifest: %s" % args.audit_manifest)
     if os.path.lexists(str(args.output)):
         parser.error("output already exists: %s" % args.output)
     if os.path.lexists(str(args.summary)):
@@ -377,6 +428,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         rows = _load_jsonl(args.episodes)
+        if args.audit_manifest is not None:
+            rows = join_audit_source_evaluations(rows, _load_jsonl(args.audit_manifest))
         episode_ids = [str(row.get("episode_id") or "") for row in rows]
         if any(not value for value in episode_ids) or len(set(episode_ids)) != len(episode_ids):
             raise ValueError("learning manifest episode_id values must be non-empty and unique")

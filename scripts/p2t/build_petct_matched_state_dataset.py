@@ -244,8 +244,18 @@ def build_matched_state_six(
             "reason": f"CONTROLLED_STATE_INELIGIBLE:{exc}",
             "receipt": {"schema_version": PILOT6_V2_SCHEMA, "status": "INELIGIBLE"},
         }
+    if not v2["eligible"]:
+        detail = ";".join(
+            f"{goal}:{reason}"
+            for goal, reason in sorted(v2["goal_failures"].items())
+        )
+        return {
+            "eligible": False,
+            "reason": f"CONTROLLED_STATE_INELIGIBLE:{detail}",
+            "receipt": {"schema_version": PILOT6_V2_SCHEMA, "status": "INELIGIBLE"},
+        }
     states: dict[str, dict[str, Any]] = {}
-    for expected_goal in GOALS:
+    for expected_goal in list(v2["states"]):
         operation = expected_goal.split("_", 1)[0]
         scribble = scribbles[operation]
         state = v2["states"][expected_goal]
@@ -288,12 +298,13 @@ def build_matched_state_six(
         }
 
     # Intent rendering is intentionally after the official scribble and binding.
-    for goal in GOALS:
+    for goal in states:
         states[goal]["gold_intent"] = intent_renderer(goal)
     return {
         "eligible": True,
         "scribbles": scribbles,
         "states": states,
+        "goal_failures": dict(v2["goal_failures"]),
         "receipt": {
             "schema_version": MATCHED_STATE_SCHEMA,
             "constructor_schema_version": PILOT6_V2_SCHEMA,
@@ -302,9 +313,12 @@ def build_matched_state_six(
             "stage_order": list(CONTROLLED_STAGE_ORDER),
             "shared_physical_scribble_within_operation": True,
             "shared_physical_scribble_across_operations": False,
-            "matched_goals": list(GOALS),
+            "matched_goals": list(states),
+            "failed_goals": dict(v2["goal_failures"]),
             "goals_by_operation": {
-                operation: list(goals)
+                operation: sorted(
+                    goal for goal in goals if goal in states
+                )
                 for operation, goals in GOALS_BY_OPERATION.items()
             },
             "scribble_coordinate_sha256": {
@@ -328,6 +342,70 @@ def _verified_image(row: Mapping[str, Any], key: str) -> tuple[Path, nib.Nifti1I
     if expected is not None and expected != digest:
         raise RuntimeError(f"{key} hash differs from case manifest")
     return path, nib.load(str(path)), digest
+
+
+def _audit_staged_attempt_invariants(
+    *,
+    rows: list[dict[str, Any]],
+    exclusions: list[dict[str, Any]],
+    state_stage: Path,
+    requested_attempts: Mapping[str, Mapping[str, str]],
+) -> tuple[dict[str, int], set[str], set[str]]:
+    """Finalize audit for Plan A operation-triplet exclusions.
+
+    Returns ``(group_counts, generated_attempt_ids, excluded_attempt_ids)``.
+    ``excluded_attempt_ids`` holds every attempt with at least one excluded
+    operation triplet, so partially excluded attempts appear in both the
+    generated and the excluded sets.  R11 failed the staged-directory
+    equality check because all-triplet-excluded attempts left empty state
+    directories behind; that path is now unreachable, and this audit keeps
+    the invariant explicit.
+    """
+    group_counts: dict[str, int] = {}
+    group_goals: dict[str, set[str]] = {}
+    group_operations: dict[str, set[str]] = {}
+    for row in rows:
+        group_id = row["matched_state_group_id"]
+        group_counts[group_id] = group_counts.get(group_id, 0) + 1
+        group_goals.setdefault(group_id, set()).add(str(row["goal"]))
+        group_operations.setdefault(group_id, set()).add(str(row["operation"]))
+    if not group_counts:
+        raise RuntimeError("no eligible controlled matched-state groups were produced")
+    if any(count != 3 for count in group_counts.values()):
+        raise RuntimeError("staged matched-state group is incomplete")
+    if any(len(operations) != 1 for operations in group_operations.values()):
+        raise RuntimeError("staged matched-state group mixes signed-cue operations")
+    for group_id, goals in group_goals.items():
+        operation = next(iter(group_operations[group_id]))
+        if goals != set(GOALS_BY_OPERATION[operation]):
+            raise RuntimeError(
+                "staged matched-state group lacks its exact operation triplet"
+            )
+    generated_attempt_ids = {str(row["attempt_id"]) for row in rows}
+    staged_group_ids = {
+        path.name for path in state_stage.iterdir() if path.is_dir()
+    }
+    if staged_group_ids != generated_attempt_ids:
+        raise RuntimeError("staged state directories differ from complete attempts")
+    exclusion_keys = {
+        (str(row["attempt_id"]), str(row.get("operation") or ""))
+        for row in exclusions
+    }
+    if len(exclusion_keys) != len(exclusions):
+        raise RuntimeError(
+            "one controlled attempt+operation received multiple exclusions"
+        )
+    excluded_attempt_ids = {key[0] for key in exclusion_keys}
+    fully_excluded_attempt_ids = {
+        key[0] for key in exclusion_keys if key[1] == ""
+    }
+    if generated_attempt_ids & fully_excluded_attempt_ids:
+        raise RuntimeError(
+            "controlled attempt is both generated and fully excluded"
+        )
+    if generated_attempt_ids | excluded_attempt_ids != set(requested_attempts):
+        raise RuntimeError("controlled attempt denominator is not closed")
+    return group_counts, generated_attempt_ids, excluded_attempt_ids
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -455,6 +533,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         effective_strategy: str | None,
         reason: str,
         detail: str | None = None,
+        operation: str | None = None,
     ) -> None:
         item = {
             "case_id": str(source["case_id"]),
@@ -465,6 +544,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "effective_strategy": effective_strategy,
             "reason": reason,
         }
+        if operation is not None:
+            item["operation"] = operation
         if detail:
             item["reason_detail"] = detail
         exclusions.append(item)
@@ -571,45 +652,85 @@ def main(argv: Sequence[str] | None = None) -> int:
                             detail=crossed["detail"],
                         )
                         continue
-                    if any(
-                        not mask_fits_physical_crop(
-                            pilot6["states"][goal]["authorized_target"][
-                                :,
-                                :,
-                                scribbles[goal.split("_", 1)[0]]["source_slice"],
-                            ],
-                            center_xy=np.mean(
-                                np.asarray(
-                                    [
-                                        [coordinate[0], coordinate[1]]
-                                        for coordinate in scribbles[
-                                            goal.split("_", 1)[0]
-                                        ]["coordinates_xyz"]
-                                    ]
+                    # Plan A (D-2026-08-16, operation-triplet granularity):
+                    # only the broken operation triplet is excluded; the
+                    # sibling operation keeps producing episodes.
+                    goals_to_produce: list[str] = []
+                    for operation in GOALS_BY_OPERATION:
+                        op_goals = GOALS_BY_OPERATION[operation]
+                        missing = [
+                            goal for goal in op_goals
+                            if goal not in pilot6["states"]
+                        ]
+                        if missing:
+                            exclude_attempt(
+                                source=source,
+                                partition=partition,
+                                requested_strategy=strategy,
+                                effective_strategy=str(
+                                    scribbles[operation]["effective_strategy"]
                                 ),
-                                axis=0,
-                            ),
-                            spacing_xy=gt_image.header.get_zooms()[:2],
-                            field_mm=float(crop["crop_field_mm"]),
-                            output_size=int(crop["output_size_px"]),
-                        )
-                        for goal in GOALS
-                    ):
-                        exclude_attempt(
-                            source=source,
-                            partition=partition,
-                            requested_strategy=strategy,
-                            effective_strategy=str(
-                                scribbles["ADD"]["effective_strategy"]
-                            ),
-                            reason="AUTHORIZED_TARGET_EXCEEDS_FROZEN_PHYSICAL_CROP",
-                        )
+                                reason=(
+                                    "CONTROLLED_STATE_INELIGIBLE:"
+                                    + operation
+                                ),
+                                detail=";".join(
+                                    f"{goal}:{pilot6['goal_failures'][goal]}"
+                                    for goal in missing
+                                ),
+                                operation=operation,
+                            )
+                            continue
+                        if any(
+                            not mask_fits_physical_crop(
+                                pilot6["states"][goal]["authorized_target"][
+                                    :,
+                                    :,
+                                    scribbles[operation]["source_slice"],
+                                ],
+                                center_xy=np.mean(
+                                    np.asarray(
+                                        [
+                                            [coordinate[0], coordinate[1]]
+                                            for coordinate in scribbles[
+                                                operation
+                                            ]["coordinates_xyz"]
+                                        ]
+                                    ),
+                                    axis=0,
+                                ),
+                                spacing_xy=gt_image.header.get_zooms()[:2],
+                                field_mm=float(crop["crop_field_mm"]),
+                                output_size=int(crop["output_size_px"]),
+                            )
+                            for goal in op_goals
+                        ):
+                            exclude_attempt(
+                                source=source,
+                                partition=partition,
+                                requested_strategy=strategy,
+                                effective_strategy=str(
+                                    scribbles[operation]["effective_strategy"]
+                                ),
+                                reason=(
+                                    "AUTHORIZED_TARGET_EXCEEDS_FROZEN_PHYSICAL_CROP:"
+                                    + operation
+                                ),
+                                operation=operation,
+                            )
+                            continue
+                        goals_to_produce.extend(op_goals)
+                    if not goals_to_produce:
+                        # Both operation triplets were excluded: exclusion rows
+                        # are already recorded and no state directory may remain
+                        # for this attempt (the finalize audit compares staged
+                        # directories to generated attempt ids; R11 failed here).
                         continue
                     group_dir = state_stage / group_id
                     group_dir.mkdir()
                     final_group_dir = final_dirs[0] / group_id
                     visible_episode_ids: set[str] = set()
-                    for goal in GOALS:
+                    for goal in goals_to_produce:
                         state = pilot6["states"][goal]
                         operation = str(state["operation"])
                         matched_group_id = _matched_state_group_id(
@@ -778,30 +899,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise RuntimeError(
                     f"controlled source integrity failed for {case_id}: {exc}"
                 ) from exc
-        group_counts: dict[str, int] = {}
-        group_goals: dict[str, set[str]] = {}
-        group_operations: dict[str, set[str]] = {}
-        for row in rows:
-            group_id = row["matched_state_group_id"]
-            group_counts[group_id] = group_counts.get(group_id, 0) + 1
-            group_goals.setdefault(group_id, set()).add(str(row["goal"]))
-            group_operations.setdefault(group_id, set()).add(str(row["operation"]))
-        if not group_counts:
-            raise RuntimeError("no eligible controlled matched-state groups were produced")
-        if any(count != 3 for count in group_counts.values()):
-            raise RuntimeError("staged matched-state group is incomplete")
-        if any(len(operations) != 1 for operations in group_operations.values()):
-            raise RuntimeError("staged matched-state group mixes signed-cue operations")
-        for group_id, goals in group_goals.items():
-            operation = next(iter(group_operations[group_id]))
-            if goals != set(GOALS_BY_OPERATION[operation]):
-                raise RuntimeError(
-                    "staged matched-state group lacks its exact operation triplet"
-                )
-        generated_attempt_ids = {str(row["attempt_id"]) for row in rows}
-        staged_group_ids = {path.name for path in state_stage.iterdir() if path.is_dir()}
-        if staged_group_ids != generated_attempt_ids:
-            raise RuntimeError("staged state directories differ from complete attempts")
+        group_counts, generated_attempt_ids, excluded_attempt_ids = (
+            _audit_staged_attempt_invariants(
+                rows=rows,
+                exclusions=exclusions,
+                state_stage=state_stage,
+                requested_attempts=requested_attempts,
+            )
+        )
         with staged[final_files[0]].open("x", encoding="utf-8", newline="\n") as stream:
             for row in rows:
                 stream.write(json.dumps(row, sort_keys=True) + "\n")
@@ -813,15 +918,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             stream.flush()
             os.fsync(stream.fileno())
 
-        excluded_attempt_ids = {str(row["attempt_id"]) for row in exclusions}
-        if len(excluded_attempt_ids) != len(exclusions):
-            raise RuntimeError("one controlled attempt received multiple exclusions")
-        if generated_attempt_ids & excluded_attempt_ids:
-            raise RuntimeError("controlled attempt is both generated and excluded")
-        if generated_attempt_ids | excluded_attempt_ids != set(requested_attempts):
-            raise RuntimeError("controlled attempt denominator is not closed")
-        if len(rows) != len(generated_attempt_ids) * len(GOALS):
-            raise RuntimeError("controlled generated attempt is not a complete Pilot-6")
         selected_cases = {str(row["case_id"]) for row in selected_sources}
         selected_patients = {
             str(row["patient_id"]).casefold() for row in selected_sources
@@ -915,7 +1011,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     sorted(excluded_attempt_ids)
                 ),
                 "episodes": len(rows),
-                "goals_per_generated_attempt": len(GOALS),
+                "goals_per_generated_operation": len(
+                    next(iter(GOALS_BY_OPERATION.values()))
+                ),
             },
             "intent_class_coverage": {
                 "required_order": list(GOALS),

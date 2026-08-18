@@ -7,7 +7,142 @@
     "supersedes": [
       "PETCT-ROUTE-A-EXPERIMENT-v2.0 (kept frozen; v2 config/schema/code are untouched)"
     ],
-    "legacy_policy": "v2 config and petct_intent_v2.schema.json stay byte-identical; v3 is additive"
+    "legacy_policy": "D1/D2/D3, R12, and legacy Gate 0-C are historical/superseded and cannot satisfy any active J gate"
+  },
+  "mainline_dataset": {
+    "dataset_id": "R13-main-single-round",
+    "source_m0_lineage": "M0_V6_FIVEFOLD_OOF",
+    "mainline_eligible": true,
+    "lifecycle": "active",
+    "partitions": ["train", "val"],
+    "episode_schema": "single_round_one_scribble_one_strategy_v1",
+    "round_count": 1,
+    "scribbles_per_episode": 1,
+    "strategy_is_label": false,
+    "strategy_siblings_max": 3,
+    "trajectory_dataset": "R13-trajectory-5r is separate and never implicit in R13-main"
+  },
+  "dataset": {
+    "name": "PSMA-PET-CT-Lesions-v3",
+    "cases": 597,
+    "patients": 378,
+    "split_unit": "patient",
+    "folds": 5,
+    "split_seed": 42,
+    "learning_split": {
+      "schema_version": "PETCT-LEARNING-SPLIT-v1.0",
+      "algorithm": "stable-patient-hash-v1",
+      "seed": 20260717,
+      "target_patient_counts": {"train": 264, "val": 57, "test": 57},
+      "case_counts": "FROZEN_IN_GENERATED_SPLIT_RECEIPT",
+      "test_access": "exactly-once-after-all-v2-development-freezes"
+    }
+  },
+  "scribble": {
+    "source": "lab-midas/autoPETV",
+    "commit": "4a2026866bfacc812492cfc7e6a8c54ac3c4f703",
+    "simulator_file_sha256": "a2124e8aa4207e53ac93259214a35b7cf74626f83ab164e519769f86557d7cd2",
+    "polarity_contract": {
+      "ADD": {"name": "POSITIVE_FOREGROUND", "source_residual": "FN", "signed_value": 1},
+      "REMOVE": {"name": "NEGATIVE_BACKGROUND", "source_residual": "FP", "signed_value": -1}
+    },
+    "model_encoding": {
+      "p2t": "two disjoint binary channels: cue_fg and cue_bg",
+      "editor_projection": "one signed channel cue_fg-cue_bg: +1 ADD, -1 REMOVE, 0 elsewhere"
+    },
+    "strategies": ["centerline", "random", "boundary"],
+    "cue_eligibility_rule": "largest-axial-slice-pixels-per-residual-component",
+    "minimum_best_slice_pixels": 5,
+    "cue_eligibility_decision": "D-2026-08-02-01: a residual connected component may carry a cue only when its largest axial slice holds at least minimum_best_slice_pixels pixels; the unit is pixels and not mm^2 because in-plane spacing varies per case (one pixel spans 7.48-16.59 mm^2 across the cohort), so no physical-area threshold can guarantee a drawable centerline or boundary curve",
+    "primary_assignment": "stable-patient-hash",
+    "primary_strategy_mode": "primary",
+    "primary_strategy_salt": "PETCT-PRIMARY-v2",
+    "robustness_strategy_mode": "all-as-three-matched-attempts-not-three-strokes-in-one-episode",
+    "seed": 42
+  },
+  "learning_tensor_normalization": {
+    "crop_field_mm": 192.0,
+    "output_size_px": 256,
+    "output_spacing_mm": 0.75,
+    "ct": "clip[-1000,1000]/1000",
+    "pet": "log1p(max(SUV,0)) then per-volume robust z-score over positive voxels",
+    "robust_scale": "IQR with epsilon=1e-6",
+    "mask_channels": "M0 binary 0/1; P2T cue_fg/cue_bg binary disjoint; editor derives signed cue as cue_fg-cue_bg",
+    "note": "Shared by all v2 P2T/editor conditions; input-only statistics never use GT."
+  },
+  "p2t": {
+    "input_channels": [
+      "PET_z-2", "PET_z-1", "PET_z", "PET_z+1", "PET_z+2",
+      "CT_z-2", "CT_z-1", "CT_z", "CT_z+1", "CT_z+2",
+      "M0_z-2", "M0_z-1", "M0_z", "M0_z+1", "M0_z+2",
+      "FG_POSITIVE_scribble_prompted_axial_slice",
+      "BG_NEGATIVE_scribble_prompted_axial_slice"
+    ],
+    "input_channel_count": 17,
+    "primary_architecture_id": "simple_signed_scribble_state_pool_v2",
+    "primary_architecture": "simple-first shared state encoder plus explicit FG/BG cue-support pooling and relative-geometry MLP",
+    "architecture_priority": "close a transparent six-class baseline before cross-attention or other complex fusion",
+    "deferred_architecture_ablations": [
+      "scribble-query cross-attention",
+      "MPSL-inspired global pooling variant",
+      "PET-CT modality cross-attention"
+    ],
+    "heads": {
+      "joint": [
+        "ADD_SAME_LOCAL", "REMOVE_SAME_LOCAL", "ADD_SAME_COMPLETE",
+        "REMOVE_SAME_COMPLETE", "ADD_NEW_COMPLETE", "REMOVE_NEW_COMPLETE"
+      ],
+      "operation": ["ADD", "REMOVE"],
+      "target": ["SAME", "NEW"],
+      "scope": ["LOCAL", "COMPLETE"]
+    },
+    "decoder_policy": "joint argmax must decode to internally consistent operation/target/scope slots; illegal combinations are impossible",
+    "primary_metric": "six_class_patient_balanced_joint_macro_f1",
+    "primary_end_to_end_arm": "full",
+    "simple_first_input_arms": ["full", "no_M0", "polarity_blind", "geometry_only"],
+    "deferred_input_ablations": ["no_PET", "no_CT", "no_relpos"],
+    "input_arms": {
+      "full": "PET5+CT5+M0_5+cue_fg+cue_bg+relative_geometry",
+      "no_M0": "PET5+CT5+zero_M0_5+cue_fg+cue_bg+relative_geometry",
+      "polarity_blind": "PET5+CT5+M0_5+union_cue_support duplicated without FG/BG identity+relative_geometry",
+      "geometry_only": "zero_PET5+zero_CT5+M0_5+cue_fg+cue_bg+relative_geometry"
+    },
+    "training": {
+      "epochs": 100,
+      "batch_size": 16,
+      "learning_rate": 0.0003,
+      "weight_decay": 0.01,
+      "seeds": [3407, 4269, 9281],
+      "optimizer": "AdamW",
+      "checkpoint_criterion": "max val_patient_balanced_six_class_joint_macro_f1; tie-break min val_loss",
+      "loss": {
+        "joint_cross_entropy_weight": 1.0,
+        "operation_cross_entropy_weight": 0.25,
+        "target_cross_entropy_weight": 0.25,
+        "scope_cross_entropy_weight": 0.25,
+        "legality": "joint-defined slot targets only"
+      }
+    },
+    "evaluation": {
+      "bootstrap_seed": 20260717,
+      "bootstrap_samples": 10000,
+      "alpha": 0.05,
+      "required_diagnostics": [
+        "six_class_joint_confusion_matrix", "operation_macro_f1",
+        "joint_decoded_target_macro_f1", "joint_decoded_scope_macro_f1",
+        "invalid_combination_rate", "per_polarity", "per_strategy",
+        "per_goal", "patient_balanced_metrics"
+      ]
+    },
+    "candidate_confirmatory_contrast": {
+      "treatment": "full",
+      "comparator": "no_M0",
+      "metric": "six_class_patient_balanced_joint_macro_f1",
+      "alternative": "greater",
+      "minimum_absolute_effect": "PENDING_PRETEST_FEASIBILITY_AND_POWER_JUSTIFICATION",
+      "decision_rule": "freeze effect threshold before locked test; then require p-value and point-estimate criteria"
+    },
+    "confirmatory_execution_gate": "BLOCKED_UNTIL_ERROR_ATLAS_FEASIBILITY_AND_EFFECT_FREEZE"
   },
   "grammar": {
     "schema_version": "PETCT-PROGRAM-GRAMMAR-v1.0",
@@ -47,8 +182,9 @@
       "J3": {"group_loss": "shuffled_placebo", "group_shuffle_seed": 20260816, "pointer": false},
       "J4": {"group_loss": "true_matched", "group_shuffle": null, "pointer": false},
       "J5": {"group_loss": "true_matched", "group_shuffle": null, "pointer": true},
-      "J1": {"baseline_reuse": "frozen v2 six-class joint head trained on controlled corpus (flat six-call)"},
-      "J2": {"baseline_reuse": "frozen v2 independent operation/target/scope heads (flat-slot factorization)"}
+      "J9C": {"group_loss": "disabled", "group_shuffle": null, "pointer": true, "role": "effect-first natural compiler feeding J9; not the J5 attribution arm"},
+      "J1": {"trainer": "train_petct_p2t.py", "training_objective": "joint_head_only", "decode": "joint_argmax", "dataset": "R13-main-single-round"},
+      "J2": {"trainer": "train_petct_p2t.py", "training_objective": "independent_slot_heads_only", "decode": "slot_argmax_then_explicit_NEW_LOCAL_to_COMPLETE_projection", "dataset": "R13-main-single-round"}
     },
     "training": {
       "epochs": 100,
@@ -63,6 +199,8 @@
   "editor": {
     "schema_version": "PETCT-PROGRAM-EDITOR-v1.0",
     "input_channels": 13,
+    "local_radius_mm": 15.0,
+    "minimum_local_area_mm2": 50.0,
     "channel_12_contract": "central selected-component mask; bitwise zero for NEW_CUE; never a GT-derived map",
     "representation_ladder": {
       "J6": "spatial_only (12ch, NULL conditioning)",
@@ -136,7 +274,7 @@
     }
   },
   "gates": {
-    "G0": ["lineage + receipt binding", "inference-only dry-run", "legacy predicted_slots diagnostic", "291 fixed-cohort recomputation"],
+    "G0": ["R13 M0-v6 lineage + data-ready binding", "R13 inference-only dry-run", "R13 predicted-program natural-VAL diagnostic"],
     "G1": "fixed-cohort paired 2D/3D curves; legacy gain arithmetic banned",
     "G2": "true-group beats no-group and shuffled; natural OOF transfer holds",
     "G3": "component census: ADD_SAME coverage >= 90-95%, ambiguity <= 20-25%",

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+echo "HISTORICAL_ONLY: superseded Route A launcher cannot run after the R13/M0-v6 cutover." >&2
+exit 64
+
 # Run the implemented Route A stages after the five-fold nnU-Net baseline.
 # The launcher is deliberately fail-closed.  Controlled matched-state tensors
 # train P2T; the resulting checkpoint is then applied to natural OOF tensors by

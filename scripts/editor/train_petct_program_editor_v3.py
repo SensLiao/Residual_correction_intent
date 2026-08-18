@@ -33,6 +33,9 @@ from common.petct_program_learning import (  # noqa: E402
     validate_program_manifest_receipt,
     validate_training_split,
 )
+from common.petct_mainline_lineage import (  # noqa: E402
+    validate_r13_training_binding,
+)
 from common.petct_program_models import (  # noqa: E402
     PROGRAM_EDITOR_ARCHITECTURE_ID,
     ProgramCompilerNet,
@@ -127,6 +130,7 @@ def main() -> int:
     parser.add_argument("--labels", type=Path, required=True)
     parser.add_argument("--learning-split", type=Path, required=True)
     parser.add_argument("--manifest-receipt", type=Path, required=True)
+    parser.add_argument("--lineage-receipt", type=Path, required=True)
     parser.add_argument("--candidates", type=Path, required=True)
     parser.add_argument("--pointer-targets", type=Path, default=None)
     parser.add_argument("--predicted-calls", type=Path, default=None)
@@ -140,6 +144,9 @@ def main() -> int:
     parser.add_argument("--learning-rate", type=float, default=0.0003)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--dataset-mode", choices=["matched", "natural"], default="natural"
+    )
     args = parser.parse_args()
     if args.output.exists():
         parser.error("output already exists")
@@ -159,7 +166,15 @@ def main() -> int:
         parser.error("seed %d is not in editor.training.seeds" % args.seed)
     loss_config = config["editor"]["training"]["loss"]
     dropout = float(config["editor"]["program_dropout"])
-    labels = load_label_manifest(args.labels)
+    lineage = validate_r13_training_binding(
+        args.lineage_receipt,
+        args.manifest_receipt,
+        args.episodes,
+        args.labels,
+    )
+    labels = load_label_manifest(
+        args.labels, require_matched_groups=args.dataset_mode == "matched"
+    )
     split_sha = validate_training_split(labels, args.learning_split)
     validate_program_manifest_receipt(
         args.manifest_receipt, args.episodes, args.labels, args.learning_split
@@ -291,6 +306,10 @@ def main() -> int:
         "call_source": args.call_source,
         "seed": args.seed,
         "seed_registry": training["seeds"],
+        "dataset_mode": args.dataset_mode,
+        "source_m0_lineage": lineage["source_m0_lineage"],
+        "lineage_receipt": str(args.lineage_receipt.resolve()),
+        "lineage_receipt_sha256": _sha256_file(args.lineage_receipt),
         "hyperparameters": {
             "epochs": args.epochs,
             "batch_size": args.batch_size,

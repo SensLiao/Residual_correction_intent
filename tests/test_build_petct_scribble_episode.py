@@ -15,6 +15,9 @@ from data.build_petct_scribble_episode import (  # noqa: E402
     EpisodeContractError,
     ResidualCueIneligibleError,
     _assert_visible_safe,
+    _sha256_json,
+    _validate_m0_provenance,
+    _visible_m0_provenance,
     build_episode_documents,
     canonical_intent_frame,
     compute_fn_residual,
@@ -450,3 +453,94 @@ def test_natural_m0_provenance_cannot_be_caller_supplied() -> None:
             patient_id="patient",
             m0_path=Path("m0.nii.gz"),
         )
+
+
+def _natural_provenance(*, legacy_null: bool) -> dict:
+    """Build a valid natural-OOF provenance binding, v6 or v5 era.
+
+    The v6 OOF binding expresses the three legacy training-receipt hashes as
+    explicit null (auditable absence); a v5-era binding carries real digests.
+    """
+
+    provenance = {
+        "kind": "patient_excluded_oof",
+        "schema_version": "PETCT-NATURAL-OOF-PROVENANCE-v1.0",
+        "contract_version": "PETCT-M0-OOF-v1.0",
+        "held_out_fold": 3,
+        "oof_ready_sha256": "1" * 64,
+        "m0_sha256": "2" * 64,
+        "foreground_probability_sha256": "3" * 64,
+        "checkpoint_sha256": "4" * 64,
+        "plans_sha256": "5" * 64,
+        "dataset_json_sha256": "6" * 64,
+        "source_tree_sha256": "7" * 64,
+        "splits_final_sha256": "8" * 64,
+        "preprocess_ready_sha256": None if legacy_null else "9" * 64,
+        "full_train_ready_sha256": None if legacy_null else "a" * 64,
+        "fold_receipt_sha256": None if legacy_null else "b" * 64,
+        "input_ct_sha256": "c" * 64,
+        "input_pet_sha256": "d" * 64,
+        "input_gt_sha256": "e" * 64,
+    }
+    provenance["binding_sha256"] = _sha256_json(
+        {key: value for key, value in provenance.items() if key != "binding_sha256"}
+    )
+    return provenance
+
+
+def test_natural_provenance_accepts_null_legacy_receipt_hashes() -> None:
+    _validate_m0_provenance("natural", _natural_provenance(legacy_null=True))
+
+
+@pytest.mark.parametrize(
+    ("override", "match"),
+    [
+        ({"preprocess_ready_sha256": "not-a-sha"}, "preprocess_ready_sha256"),
+        ({"fold_receipt_sha256": "0" * 63}, "fold_receipt_sha256"),
+        ({"checkpoint_sha256": None}, "checkpoint_sha256"),
+    ],
+)
+def test_natural_provenance_still_rejects_invalid_hashes(override, match) -> None:
+    provenance = _natural_provenance(legacy_null=True)
+    provenance.update(override)
+    provenance["binding_sha256"] = _sha256_json(
+        {key: value for key, value in provenance.items() if key != "binding_sha256"}
+    )
+    with pytest.raises(EpisodeContractError, match=match):
+        _validate_m0_provenance("natural", provenance)
+
+
+def test_visible_provenance_omits_null_legacy_receipt_hashes() -> None:
+    visible = _visible_m0_provenance(
+        "natural", _natural_provenance(legacy_null=True)
+    )
+    for key in ("preprocess_ready_sha256", "full_train_ready_sha256", "fold_receipt_sha256"):
+        assert key not in visible
+    assert visible["checkpoint_sha256"] == "4" * 64
+
+
+def test_natural_episode_documents_keep_null_legacy_hashes_in_audit_only() -> None:
+    scribble = generate_residual_scribble(
+        np.ones((4, 4, 1), dtype=np.uint8),
+        operation="ADD",
+        strategy="random",
+        simulator=_simulator,
+        upstream_commit="abc",
+    )
+    provenance = _natural_provenance(legacy_null=True)
+    visible, evaluation = build_episode_documents(
+        episode_id="petct-0123456789abcdef01234567",
+        lane="natural",
+        patient_group_hash="a" * 64,
+        montage_reference="visible.npz",
+        m0_provenance=provenance,
+        scribble_record=scribble,
+        source_case_id="hidden-case",
+        source_patient_id="hidden-patient",
+        residual_sha256="b" * 64,
+        residual_voxels=16,
+        gold_intent=canonical_intent_frame("ADD_SAME_LOCAL"),
+    )
+    for key in ("preprocess_ready_sha256", "full_train_ready_sha256", "fold_receipt_sha256"):
+        assert key not in visible["m0_provenance"]
+        assert evaluation["m0_provenance"][key] is None

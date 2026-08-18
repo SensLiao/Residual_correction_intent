@@ -41,6 +41,9 @@ from common.petct_program_learning import (  # noqa: E402
     validate_program_manifest_receipt,
     validate_training_split,
 )
+from common.petct_mainline_lineage import (  # noqa: E402
+    validate_r13_training_binding,
+)
 from common.petct_program_models import ProgramCompilerNet  # noqa: E402
 
 CHECKPOINT_SCHEMA = "PETCT-PROGRAM-COMPILER-CHECKPOINT-v1.0"
@@ -146,21 +149,31 @@ def main() -> int:
     parser.add_argument("--labels", type=Path, required=True)
     parser.add_argument("--learning-split", type=Path, required=True)
     parser.add_argument("--manifest-receipt", type=Path, required=True)
+    parser.add_argument("--lineage-receipt", type=Path, required=True)
     parser.add_argument("--candidates", type=Path, required=True)
     parser.add_argument("--pointer-targets", type=Path, default=None)
     parser.add_argument("--experiment-config", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--arm", choices=["J0", "J3", "J4", "J5"], required=True)
+    parser.add_argument(
+        "--arm", choices=["J0", "J3", "J4", "J5", "J9C"], required=True
+    )
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=0.0003)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--device", default="cuda")
+    # R13 mainline is natural single-round (D-2026-08-17-01 cutover);
+    # "matched" serves only the legacy v2 controlled lane / J3 placebo.
+    parser.add_argument(
+        "--dataset-mode", choices=["matched", "natural"], default="natural"
+    )
     args = parser.parse_args()
     if args.output.exists():
         parser.error("output already exists")
-    if args.arm in ("J5",) and args.pointer_targets is None:
-        parser.error("J5 requires --pointer-targets")
+    if args.arm in ("J5", "J9C") and args.pointer_targets is None:
+        parser.error("pointer-enabled compiler arms require --pointer-targets")
+    if args.dataset_mode == "natural" and args.arm not in ("J0", "J9C"):
+        parser.error("the single-round natural mainline supports J0 or J9C")
     with args.experiment_config.open(encoding="utf-8") as stream:
         config = json.load(stream)
     if config.get("schema_version") != "PETCT-ROUTE-A-EXPERIMENT-v3.0":
@@ -183,7 +196,15 @@ def main() -> int:
         parser.error("no train/val rows in episodes manifest")
     candidates = _load_candidates(args.candidates)
     pointer_targets = _load_pointer_targets(args.pointer_targets) if args.pointer_targets else {}
-    labels = load_label_manifest(args.labels)
+    lineage = validate_r13_training_binding(
+        args.lineage_receipt,
+        args.manifest_receipt,
+        args.episodes,
+        args.labels,
+    )
+    labels = load_label_manifest(
+        args.labels, require_matched_groups=args.dataset_mode == "matched"
+    )
     split_sha = validate_training_split(labels, args.learning_split)
     validate_program_manifest_receipt(
         args.manifest_receipt, args.episodes, args.labels, args.learning_split
@@ -202,24 +223,38 @@ def main() -> int:
     train = InferenceEpisodeDataset(args.episodes, "train", candidates, labels)
     val = InferenceEpisodeDataset(args.episodes, "val", candidates, labels)
     train_rows = [row for row in rows if row["partition"] == "train"]
-    effective_groups = [
-        group_override.get(
-            str(row["episode_id"]),
-            "%s|%s" % (
-                labels[str(row["episode_id"])]["matched_state_group_id"],
-                labels[str(row["episode_id"])]["operation"],
-            ),
-        )
-        for row in train_rows
-    ]
+    effective_groups = []
+    if args.dataset_mode == "matched":
+        effective_groups = [
+            group_override.get(
+                str(row["episode_id"]),
+                "%s|%s" % (
+                    labels[str(row["episode_id"])]["matched_state_group_id"],
+                    labels[str(row["episode_id"])]["operation"],
+                ),
+            )
+            for row in train_rows
+        ]
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = torch.device(args.device)
-    train_loader = DataLoader(
-        train,
-        batch_sampler=GroupedBatchSampler(effective_groups, args.batch_size, args.seed),
-        collate_fn=program_collate,
-    )
+    if args.dataset_mode == "matched":
+        train_loader = DataLoader(
+            train,
+            batch_sampler=GroupedBatchSampler(
+                effective_groups, args.batch_size, args.seed
+            ),
+            collate_fn=program_collate,
+        )
+    else:
+        generator = torch.Generator().manual_seed(args.seed)
+        train_loader = DataLoader(
+            train,
+            batch_size=args.batch_size,
+            shuffle=True,
+            generator=generator,
+            collate_fn=program_collate,
+        )
     val_loader = DataLoader(
         val, batch_size=args.batch_size, shuffle=False, collate_fn=program_collate
     )
@@ -328,6 +363,10 @@ def main() -> int:
         "arm": args.arm,
         "seed": args.seed,
         "seed_registry": training["seeds"],
+        "dataset_mode": args.dataset_mode,
+        "source_m0_lineage": lineage["source_m0_lineage"],
+        "lineage_receipt": str(args.lineage_receipt.resolve()),
+        "lineage_receipt_sha256": _sha256_file(args.lineage_receipt),
         "hyperparameters": {
             "epochs": args.epochs,
             "batch_size": args.batch_size,

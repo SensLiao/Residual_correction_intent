@@ -28,6 +28,7 @@ from data.materialize_petct_component_candidates import (  # noqa: E402
     physical_crop_resample_2d,
 )
 from data.materialize_petct_component_targets import (  # noqa: E402
+    join_audit_source_evaluations,
     main as target_main,
     materialize_target_record,
 )
@@ -262,6 +263,38 @@ def test_candidate_to_target_pipeline_shape_axis_and_multi_positive(tmp_path: Pa
     assert summary_row["component_keys"] == [
         component["component_key"] for component in candidate["components"]
     ]
+
+
+def test_audit_manifest_restores_source_evaluation_without_widening_visible_row(
+    tmp_path: Path,
+):
+    row, _, _ = _pipeline_fixture(tmp_path)
+    audit_source = dict(row)
+    public_row = dict(row)
+    source_evaluation = public_row.pop("source_evaluation")
+    public_row["evaluation_document"] = str(tmp_path / "evaluation-document.json")
+    audit_row = {
+        "episode_id": row["episode_id"],
+        "source_record": audit_source,
+        "source_record_sha256": hashlib.sha256(
+            json.dumps(
+                audit_source,
+                allow_nan=False,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+
+    joined = join_audit_source_evaluations([public_row], [audit_row])
+
+    assert joined[0]["source_evaluation"] == source_evaluation
+    assert "source_evaluation" not in public_row
+    broken = dict(audit_row)
+    broken["source_record_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="audit source record hash"):
+        join_audit_source_evaluations([public_row], [broken])
 
 
 def test_candidate_join_fails_closed_on_hash_count_or_key_mismatch(tmp_path: Path):

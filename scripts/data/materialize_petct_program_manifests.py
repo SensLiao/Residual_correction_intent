@@ -29,6 +29,13 @@ from common.petct_program_learning import (  # noqa: E402
     load_jsonl,
     validate_training_split,
 )
+from common.petct_mainline_lineage import (  # noqa: E402
+    MAINLINE_DATASET_ID,
+    MAINLINE_SOURCE,
+    file_record,
+    validate_r13_lineage_receipt,
+    validate_r13_program_rows,
+)
 
 INFERENCE_SCHEMA = "PETCT-PROGRAM-INFERENCE-MANIFEST-v1.0"
 LABEL_SCHEMA = "PETCT-PROGRAM-LABEL-MANIFEST-v1.0"
@@ -94,9 +101,18 @@ def split_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict], list[dict
             )
         required = {
             "case_id", "patient_id", "partition", "goal", "operation",
-            "matched_state_group_id", "visible_npz", "visible_sha256",
+            "visible_npz", "visible_sha256",
             "evaluation_npz", "evaluation_sha256", "learning_split_sha256",
         }
+        # Natural single-round rows carry no matched-state grouping; the R13
+        # identity attaches episode_family_id in bind_r13_identity.  A
+        # controlled-lane row that lost its group id fails closed here.
+        has_matched_group = (
+            "matched_state_group_id" in source
+            and str(source.get("matched_state_group_id") or "")
+        )
+        if "matched_state_group_id" in source:
+            required.add("matched_state_group_id")
         if not required.issubset(source):
             raise LearningContractError(
                 "rich source row is incomplete for episode %s" % episode_id
@@ -121,11 +137,12 @@ def split_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict], list[dict
             "partition": str(source["partition"]),
             "goal": str(source["goal"]),
             "operation": str(source["operation"]),
-            "matched_state_group_id": str(source["matched_state_group_id"]),
             "evaluation_npz": str(source["evaluation_npz"]),
             "evaluation_sha256": str(source["evaluation_sha256"]),
             "learning_split_sha256": str(source["learning_split_sha256"]),
         }
+        if has_matched_group:
+            label["matched_state_group_id"] = str(source["matched_state_group_id"])
         for optional in ("target", "scope", "held_out_fold", "test_access_receipt_sha256"):
             if optional in source:
                 label[optional] = source[optional]
@@ -144,6 +161,69 @@ def split_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict], list[dict
     return inference_rows, label_rows, audit_rows
 
 
+def bind_r13_identity(
+    source_rows: Sequence[Mapping[str, Any]],
+    inference_rows: list[dict],
+    label_rows: list[dict],
+    audit_rows: list[dict],
+) -> None:
+    """Attach the single-round R13 identity without exposing label identity."""
+
+    for source, inference, label, audit in zip(
+        source_rows, inference_rows, label_rows, audit_rows
+    ):
+        round_index = int(source.get("round_index", 0))
+        strategy = str(source.get("strategy") or "")
+        source_evaluation = source.get("source_evaluation")
+        m0_sha256 = (
+            str(source_evaluation.get("m0_sha256") or "")
+            if isinstance(source_evaluation, Mapping)
+            else ""
+        )
+        if not m0_sha256:
+            raise LearningContractError("R13 source row lacks current-M content identity")
+        family_id = hashlib.sha256(
+            (
+                "PETCT-R13-FAMILY-v1|%s|%s|%d|%s"
+                % (
+                    source["case_id"],
+                    m0_sha256,
+                    round_index,
+                    source["operation"],
+                )
+            ).encode("utf-8")
+        ).hexdigest()[:24]
+        inference.update(
+            {
+                "dataset_id": MAINLINE_DATASET_ID,
+                "source_m0_lineage": MAINLINE_SOURCE,
+                "round_index": round_index,
+                "scribble_count": 1,
+            }
+        )
+        label.update(
+            {
+                "dataset_id": MAINLINE_DATASET_ID,
+                "source_m0_lineage": MAINLINE_SOURCE,
+                "episode_family_id": family_id,
+                "round_index": round_index,
+                "scribble_count": 1,
+                "strategy": strategy,
+            }
+        )
+        audit.update(
+            {
+                "dataset_id": MAINLINE_DATASET_ID,
+                "source_m0_lineage": MAINLINE_SOURCE,
+                "episode_family_id": family_id,
+                "round_index": round_index,
+                "scribble_count": 1,
+                "strategy": strategy,
+            }
+        )
+    validate_r13_program_rows(label_rows)
+
+
 def _write_jsonl_exclusive(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8", newline="\n") as stream:
@@ -160,6 +240,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--learning-split", type=Path, required=True)
+    parser.add_argument("--lineage-receipt", type=Path, required=True)
+    parser.add_argument("--candidate-summary", type=Path, required=True)
     parser.add_argument("--inference", type=Path, required=True)
     parser.add_argument("--labels", type=Path, required=True)
     parser.add_argument("--audit", type=Path, required=True)
@@ -170,8 +252,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("all output paths must be distinct")
     if any(path.exists() or path.is_symlink() for path in outputs):
         parser.error("output already exists")
+    lineage = validate_r13_lineage_receipt(args.lineage_receipt)
     rows = load_jsonl(args.source)
     inference, labels, audit = split_rows(rows)
+    bind_r13_identity(rows, inference, labels, audit)
+    candidate_rows = load_jsonl(args.candidate_summary)
+    candidates = {str(row.get("episode_id") or ""): row for row in candidate_rows}
+    if "" in candidates or len(candidates) != len(candidate_rows):
+        parser.error("candidate summary has missing/duplicate episode IDs")
+    if set(candidates) != {str(row["episode_id"]) for row in inference}:
+        parser.error("candidate summary does not exactly cover R13 episodes")
+    for row in inference:
+        candidate = candidates[str(row["episode_id"])]
+        row["candidate_json"] = str(candidate["candidate_path"])
+        row["candidate_sha256"] = str(candidate["candidate_sha256"])
+        _assert_visible_value_safe(row)
     label_map = {str(row["episode_id"]): row for row in labels}
     split_sha = validate_training_split(label_map, args.learning_split)
     _write_jsonl_exclusive(args.inference, inference)
@@ -190,11 +285,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             "sha256": _sha256_file(args.source),
         },
         "outputs": {
-            "inference": {"path": str(args.inference.resolve()), "sha256": _sha256_file(args.inference)},
-            "labels": {"path": str(args.labels.resolve()), "sha256": _sha256_file(args.labels)},
-            "audit": {"path": str(args.audit.resolve()), "sha256": _sha256_file(args.audit)},
+            "inference": file_record(args.inference),
+            "labels": file_record(args.labels),
+            "audit": file_record(args.audit),
         },
         "locked_test_present": False,
+        "dataset_id": MAINLINE_DATASET_ID,
+        "source_m0_lineage": MAINLINE_SOURCE,
+        "mainline_eligible": True,
+        "lifecycle": "active",
+        "lineage_receipt": file_record(Path(lineage["receipt_path"])),
+        "candidate_summary": file_record(args.candidate_summary),
     }
     receipt["binding_sha256"] = _canonical_sha(receipt)
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
