@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this research code, please cite it as below. A journal manuscript is in preparation; the citation will be updated on submission."
+title: "Residual Correction Intent: State-Relative PET/CT Residual Correction"
+abstract: >-
+  Research code for state-conditioned executable correction programs (SCEP) in
+  interactive whole-body PET/CT lesion segmentation. A sparse scribble plus the
+  current mask and state are compiled into an object-referenced, grammar-legal
+  correction program, learned state-relatively and without ground-truth access;
+  the program then governs a constrained residual edit.
+type: software
+authors:
+  - given-names: Ruixuan
+    family-names: Liao
+    affiliation: "University of Sydney"
+    orcid: "https://orcid.org/0009-0001-1761-7942"
+keywords:
+  - medical image segmentation
+  - PET/CT
+  - interactive segmentation
+  - human-in-the-loop
+  - reproducibility
+repository-code: "https://github.com/SensLiao/residual-correction-intent"
+license-url: "https://github.com/SensLiao/residual-correction-intent"

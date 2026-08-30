@@ -1,108 +1,95 @@
-# Residual Correction Intent
+<div align="right"><a href="README.zh-CN.md">简体中文</a></div>
 
-**State-conditioned executable correction programs for interactive whole-body PET/CT lesion segmentation.**
+<p align="center"><img src="docs/hero.png" alt="Residual Correction Intent banner" width="100%"></p>
 
-This repository contains the research code for learning, from a sparse signed
-scribble and the current segmentation state, a *legal correction program* that
-is bound to a specific current-mask component and executed by a constrained
-residual editor.
+<p align="center"><strong>From a sparse scribble to an object-referenced, grammar-legal correction program for interactive whole-body PET/CT lesion segmentation.</strong></p>
 
-## Research question
+<p align="center">
+  <img src="https://img.shields.io/badge/status-research%20code-a78bfa?style=flat-square" alt="Research code">
+  <img src="https://img.shields.io/badge/PyTorch-2.6-a78bfa?style=flat-square" alt="PyTorch 2.6">
+  <img src="https://img.shields.io/badge/nnU--Net-v2-a78bfa?style=flat-square" alt="nnU-Net v2">
+  <img src="https://img.shields.io/badge/Python-3.10-a78bfa?style=flat-square" alt="Python 3.10">
+  <img src="https://img.shields.io/badge/tests-772-a78bfa?style=flat-square" alt="772 tests">
+  <img src="https://img.shields.io/badge/license-all%20rights%20reserved-a78bfa?style=flat-square" alt="All rights reserved">
+</p>
 
-A spatial scribble identifies **where** a correction is requested, but not
-**which current object** should be edited or **which legal operation** should
-be executed. We study whether the system can, without access to ground truth:
+## Overview
 
-1. compile the scribble and current state into an object-referenced legal
-   program (`COMPLETE_EXISTING(C2)`, `CREATE_NEW`, `TRIM_LOCAL(C3)`, ...);
-2. learn that interpretation **state-relatively** through same-operation
-   matched-state supervision (same image, same signed cue, different current
-   mask ⇒ different correct program);
-3. prove the predicted program actually **governs** downstream correction
-   through grammar-legal interventions and a predicted-gold utility gap.
+**Residual Correction Intent** is the research code for the Honours thesis *"From Sparse Corrections to Textual Intent: State-Relative PET/CT Residual Correction."* It studies **state-conditioned executable correction programs (SCEP)** for interactive whole-body PET/CT lesion segmentation. Author: **Ruixuan Liao** (Honours researcher, University of Sydney), also co-author of three 2026 peer-reviewed journal papers in medical imaging and feature selection.
 
-## Method overview
+The core idea: a sparse scribble says **where** a correction is wanted, but not **which** object to edit or **which** operation to run. The system compiles the scribble, the current mask and the state into an object-referenced, grammar-legal correction program — learned **state-relatively, without ground-truth access** — and that program then governs a constrained residual edit.
 
-```
-PET/CT + current mask M_k + signed scribble S_k
-        │
-        ▼
-Program Compiler (operation authority = cue sign, never predicted)
-        │   family scorer (legal families per operation)
-        │   + conditional component pointer (ADD existing-object only)
-        ▼
-Legal program: GROW_LOCAL(Cj) | COMPLETE_EXISTING(Cj) | CREATE_NEW
-               TRIM_LOCAL(Cj) | DELETE_COMPONENT(Cj) | REPAIR_OVERSEGMENTED_COMPONENT(Cj)
-        │
-        ▼
-Constrained residual editor (13 channels incl. central selected component)
-        │   ADD:  delta ∧ ¬M_k   (monotone union)
-        │   REMOVE: delta ∧ C_selected (hard complement protection)
-        ▼
-M_{k+1}
-```
+## ✨ Highlights
 
-Three data lanes are kept physically separate: an **inference-visible** lane
-(PET/CT crops, current mask, cue, component descriptors), a **label-only**
-training lane, and an **evaluation/audit-only** lane. Inference first writes an
-immutable prediction artifact; an independent evaluator joins predictions to
-labels afterwards. The inference loader cannot read either privileged lane.
+- **Intent, not just location** — a scribble marks where; the compiler resolves *which object* and *which operand* it refers to.
+- **State-relative program compiler** — picks the object and operand but **never predicts the operation**; the operation's authority comes from the cue sign.
+- **A small, legal grammar (v1)** — programs are drawn from `GROW_LOCAL` / `COMPLETE` / `CREATE_NEW` / `TRIM` / `DELETE` / `REPAIR`.
+- **Constrained residual editing** — a 13-channel editor where `ADD` is a monotone union and `REMOVE` applies hard complement protection.
+- **Reproducibility by construction** — three physically separate data lanes, an immutable prediction artifact, leakage-aware splits, a SHA-256 manifest, and commit-pinned dependencies (see below).
+- **Extensively tested** — 772 test functions guarding the contracts above.
 
-## Repository layout
+## 🏗 How it works
 
-```
-configs/    frozen v2 experiment config + v3 experiment config (SCEP redesign)
-schemas/    frozen v2 intent response schema + v3 program response schema
-scripts/
-  common/     frozen v2 models/learning (unchanged) + v3 program contract,
-              component enumeration, program models, program learning
-  data/       materializers (candidates = visible lane, targets = label lane)
-  p2t/        v3 program-compiler training entry (J0/J3/J4/J5 arms)
-  editor/     v3 program-conditioned editor training entry (J6-J9 ladder)
-  evaluation/ v3 evaluator with explicit 2D-plane vs 3D-volume denominator
-              domains (never mixed)
-tests/      pytest suite for the v3 grammar/components/losses/algebra
-protocols/  autoPET V protocol runtime manifest
-```
+<p align="center"><img src="docs/method.png" alt="Residual Correction Intent method diagram" width="100%"></p>
 
-## Status
+The pipeline turns a cue into a bounded edit:
 
-- v2 (six-class intent ontology + 12-channel editor) is **frozen** and stays
-  byte-identical; it is the legacy baseline.
-- v3 (SCEP: State-Conditioned Executable Correction Programs) is an audited
-  implementation candidate. J0-J9 remain blocked until a newly materialized
-  train/validation corpus passes its independent, content-bound receipt; this
-  repository asserts no J-series result.
-- Data and model weights are **not** included. The dataset is the public
-  PSMA-PET/CT whole-body collection (Jeblick et al., Scientific Data 2026);
-  the official interactive protocol follows autoPET V.
+1. **Inputs** — PET/CT, the current mask, and a signed scribble.
+2. **Program Compiler** (state-relative) — selects the object and operand and emits a program; it **never predicts the operation** (authority comes from the cue sign).
+3. **Object-grounded legal program** — a grammar-v1 program: `GROW_LOCAL` / `COMPLETE` / `CREATE_NEW` / `TRIM` / `DELETE` / `REPAIR`.
+4. **Constrained Residual Editor** (13-channel) — applies the edit under guardrails: `ADD` = monotone union, `REMOVE` = hard complement protection.
+5. **Output** — the corrected mask.
 
-## Reproducibility and evaluation guardrails
+## 🔬 Reproducibility & guardrails
 
-- Splits are patient-disjoint and frozen before training. Locked test images
-  are inaccessible without a separate, recorded authorization receipt.
-- The primary closed loop advances with the model's actual previous output.
-  Teacher-forced correction is reported only as an oracle/conditional ceiling.
-- Main-arm comparisons must use the same folds, checkpoint rule, initial mask,
-  interaction budget, and patient-clustered uncertainty estimator.
-- Undefined patient-by-class metric cells remain undefined and are excluded
-  with their support reported; they are never converted into perfect scores.
-- Novelty claims are limited to the tested combination of same-operation
-  matched-state supervision, object-grounded legal programs, and
-  intervention-backed evidence. The code alone does not establish clinical
-  safety, superiority, or a field-first claim.
+- **Three physically separate data lanes** — inference-visible / label-only / evaluation-only.
+- **Immutable prediction artifact** — written *before* evaluation, so predictions cannot be tuned to the metric.
+- **Leakage-aware evaluation** — patient-clustered bootstrap and leakage-aware splits.
+- **Integrity manifest** — a SHA-256 manifest over the tracked artifacts.
+- **Pinned dependencies** — nnU-Net v2 and autoPET V pinned by commit.
+- **Dataset** — PSMA-PET/CT, 597 cases / 378 patients, CC BY-NC 4.0.
+- **Test suite** — 772 test functions.
 
-Run the canonical source-only test collection from the repository root:
+## 🧰 Tech stack
+
+| Area | Technologies |
+| --- | --- |
+| Language | Python 3.10 |
+| Deep learning | PyTorch (torch 2.6), nnU-Net v2 |
+| Scientific | NumPy, nibabel, SciPy |
+| Data | PSMA-PET/CT (597 cases / 378 patients, CC BY-NC 4.0) |
+
+## 🚀 Getting started
+
+This repository is best read as **auditable research code**, not a one-command reproduction. The full training and evaluation environment — CUDA, a vendored nnU-Net tree, the autoPET V package, and the licensed dataset — is **not runnable off the original machine**. What you *can* run locally are the tests and lint that guard the contracts:
 
 ```bash
 python -m pytest -q tests
 python -m ruff check scripts tests
 ```
 
-The schema tests require `jsonschema==4.25.1`. Tests that exercise licensed
-checkpoints, vendored upstream repositories, or private runtime assets are
-environment-gated and are not evidence of model performance.
+## 🧪 Testing
 
-## Citation
+```bash
+python -m pytest -q tests
+```
 
-A manuscript is in preparation; citation will be added on submission.
+The suite contains **772 test functions** that enforce the data-lane separation, grammar legality, and residual-edit guardrails described above.
+
+## 📌 Project status
+
+This is honest, in-progress research — the state of each piece is tracked deliberately:
+
+- **v2 six-class baseline — FROZEN** (byte-identical).
+- **v3 program compiler — audited implementation candidate.**
+- **Data materialisation — awaiting an independent receipt.**
+- **J0–J9 experiments — not started.**
+- **Performance results — none.** The repository asserts **no** performance results.
+
+A manuscript is in preparation.
+
+## 📄 License
+
+A LICENSE will accompany the manuscript release; until then the code is **all rights reserved** (no `LICENSE` file is present yet). A `CITATION.cff` will be added. The dataset (PSMA-PET/CT) is licensed **CC BY-NC 4.0** and is not redistributed here.
+
+<p align="center"><sub>Built by <a href="https://github.com/SensLiao">Ruixuan "Sens" Liao</a> · USYD Advanced Computing (Honours)</sub></p>
