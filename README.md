@@ -67,7 +67,8 @@ The editor sees exactly: **5 PET slices** (z−2…z+2) + **5 CT slices** + the 
 
 ## 🛡 Reproducibility & guardrails
 
-<!-- image-slot: docs/data-lanes.png — the three physically separate data lanes (inference-visible / label-only / audit-only), the allowlist boundary, and the exactly-once test-access ledgers -->
+<p align="center"><img src="docs/data-lanes.png" alt="The three physically separate data lanes: inference-visible, label-only and audit-only, each written to its own file, with a 14-field allowlist barrier and exactly-once test-access ledgers" width="100%"></p>
+<p align="center"><sub>Three lanes, three files, one allowlist barrier — and test partitions that can only be opened once.</sub></p>
 
 Reproducibility here is not a statement of intent — it is load-bearing structure:
 

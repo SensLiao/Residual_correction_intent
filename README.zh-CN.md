@@ -67,7 +67,8 @@
 
 ## 🛡 可复现性与护栏
 
-<!-- image-slot: docs/data-lanes.png — 三条物理隔离的数据泳道（推理可见 / 仅标签 / 仅审计）、allowlist 边界与恰好一次的测试访问台账 -->
+<p align="center"><img src="docs/data-lanes.png" alt="三条物理隔离的数据泳道：推理可见、仅标签、仅审计，各写入自己的文件，中间是 14 字段 allowlist 屏障，右侧是恰好一次的测试访问台账" width="100%"></p>
+<p align="center"><sub>三条泳道、三个文件、一道 allowlist 屏障——以及只能被打开一次的测试分区。</sub></p>
 
 这里的可复现性不是意向声明，而是承重结构：
 
