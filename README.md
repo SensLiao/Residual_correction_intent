@@ -125,7 +125,19 @@ python -m ruff check scripts tests
 
 ### What you should see
 
-All tests pass, in the low minutes on CPU. The suite is the specification: among other things it proves the three-lane firewall holds, illegal programs cannot validate, the test-access ledgers are exactly-once, retired entry points stay non-operational, and the frozen v2 baseline remains byte-identical.
+All tests pass, in the low minutes on CPU. Measured on Windows 11 / Python 3.9:
+
+```text
+914 passed, 24 skipped, 25 warnings in 171.33s (0:02:51)
+```
+
+The suite is the specification: among other things it proves the three-lane firewall holds, illegal programs cannot validate, the test-access ledgers are exactly-once, retired entry points stay non-operational, and the frozen v2 baseline remains byte-identical.
+
+You can check the integrity manifest in the same sitting — it should report all 258 files intact:
+
+```bash
+sha256sum -c SHA256SUMS        # or: Get-FileHash on Windows
+```
 
 The full training/evaluation environment is **not** portable: the setup scripts under [`scripts/setup/`](scripts/setup/) build the original machine's conda + CUDA 12.4 environments and verify the pinned nnU-Net tree, and a number of launch scripts hard-code that machine's paths. This is disclosed rather than hidden — the pins are exact so the environment can be reconstructed deliberately.
 
