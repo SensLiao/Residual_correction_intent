@@ -41,7 +41,7 @@ safe=0
 while [[ "$safe" -lt 3 ]]; do
   compute=$(nvidia-smi -i "$GPU" --query-compute-apps=gpu_uuid --format=csv,noheader 2>/dev/null | sed '/^[[:space:]]*$/d' || true)
   temp=$(nvidia-smi -i "$GPU" --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null | tr -d ' ')
-  disk_bytes=$(df --output=avail -B1 /path/to/workspace | tail -1 | tr -d ' ')
+  disk_bytes=$(df --output=avail -B1 "$ROOT" | tail -1 | tr -d ' ')
   if [[ -z "$compute" && "$temp" =~ ^[0-9]+$ && "$temp" -lt 85 && "$disk_bytes" -ge 16106127360 ]]; then
     safe=$((safe + 1))
   else

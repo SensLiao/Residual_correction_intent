@@ -139,7 +139,7 @@ python -m ruff check scripts tests
 sha256sum -c SHA256SUMS        # Windows 上用 Get-FileHash
 ```
 
-完整的训练/评估环境**不可**移植：[`scripts/setup/`](scripts/setup/) 下的脚本构建的是原机器的 conda + CUDA 12.4 环境并校验 pin 定的 nnU-Net 树，若干启动脚本硬编码了那台机器的路径。这一点是公开披露而非隐藏——pin 足够精确，环境可以被有意识地重建。
+完整的训练/评估环境**不可**移植：[`scripts/setup/`](scripts/setup/) 下的脚本构建的是原机器的 conda + CUDA 12.4 环境并校验 pin 定的 nnU-Net 树，启动脚本仍按那台机器的目录结构编写。其中的服务器路径已换成占位符（`/path/to/workspace`、`/path/to/conda`、`/path/to/scratch`、`/path/to/petct_root`），使用时改成你自己的目录；两台 GPU 服务器分别称为 server A 和 server B。pin 足够精确，环境可以被有意识地重建。
 
 ## 📊 项目状态
 

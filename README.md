@@ -139,7 +139,7 @@ You can check the integrity manifest in the same sitting — it should report al
 sha256sum -c SHA256SUMS        # or: Get-FileHash on Windows
 ```
 
-The full training/evaluation environment is **not** portable: the setup scripts under [`scripts/setup/`](scripts/setup/) build the original machine's conda + CUDA 12.4 environments and verify the pinned nnU-Net tree, and a number of launch scripts hard-code that machine's paths. This is disclosed rather than hidden — the pins are exact so the environment can be reconstructed deliberately.
+The full training/evaluation environment is **not** portable: the setup scripts under [`scripts/setup/`](scripts/setup/) build the original machine's conda + CUDA 12.4 environments and verify the pinned nnU-Net tree, and the launch scripts still follow that machine's directory layout. Its server paths are replaced with placeholders (`/path/to/workspace`, `/path/to/conda`, `/path/to/scratch`, `/path/to/petct_root`) that you point at your own directories, and its two GPU servers are called *server A* and *server B*. The pins are exact, so the environment can be reconstructed deliberately.
 
 ## 📊 Project status
 
