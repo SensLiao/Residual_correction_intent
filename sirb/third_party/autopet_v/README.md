@@ -1,6 +1,6 @@
 # Official autoPET V evaluation protocol
 
-SIRB is evaluated with the interaction protocol of the [autoPET V challenge](https://www.autopet.org/autopetv.html):
+SIRB is evaluated with the interaction protocol of the autoPET V challenge:
 an initial segmentation and five correction rounds, each round with one scribble from a simulated user, and every
 round's mask scored with the official metrics. The two official files this needs are included here, so **nothing has
 to be downloaded**. The full official repository is <https://github.com/lab-midas/autoPETV>.

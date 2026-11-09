@@ -3,7 +3,7 @@
 Layout of a cache directory (``SIRB_PREPROCESSED/<data.cache.directory>``)::
 
     inputs/<examination>/pet.npy, ct.npy, initial_segmentation.npy,
-                         initial_probability.npy (when the raw data has it), whole_volume_frame.npy, meta.json
+                         initial_probability.npy (when the raw data has it), meta.json
                                                                 what a deployed model may read
     labels/<examination>/gt.npy, label_meta.json               ground truth: training and scoring only
 
@@ -18,8 +18,7 @@ Normalisation, once per examination and never per window:
 
 The initial segmentation is ``initial probability > 0.5`` (a tie is background), or the supplied mask, whose
 disagreement with that rule is counted and must stay within ``data.initial_segmentation.max_disagreement`` of their
-union. ``whole_volume_frame.npy`` holds PET, CT and the initial probability reduced to the 96 x 64 x 64 whole-volume
-grid (cell means).
+union.
 
 :class:`ExaminationCache` reads a cache. The split recorded in ``meta.json`` is checked against an allow-list on
 every access: the test set is read only by a cache opened with ``splits=("test",)``. SIRB reads PET in fixed
@@ -32,7 +31,6 @@ reference coordinates: ``z = (s_i / s*) x + (mu_i - mu*) / s*`` with the examina
 from __future__ import annotations
 
 import json
-import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,11 +41,11 @@ import numpy as np
 from ..utils.io import TargetExistsError, write_json_atomic, write_npy_atomic
 from .geometry import affine_xyz_from_zyx, validate_affine_xyz
 
-__all__ = ["CACHE_SCHEMA", "FRAME_CHANNELS", "INITIAL_SEGMENTATION_RULE", "SPLITS", "ExaminationCache",
+__all__ = ["CACHE_SCHEMA", "INITIAL_SEGMENTATION_RULE", "SPLITS", "ExaminationCache",
            "ExaminationCacheError", "ExaminationInputs", "LabelAccessError", "NonFiniteExaminationError",
            "PetReference", "cache_directory", "cached_examinations", "normalize_ct", "normalize_pet",
            "pet_reference_from_examinations", "pet_reference_from_config", "pet_to_reference",
-           "threshold_initial_probability", "whole_volume_frame", "write_examination_cache"]
+           "threshold_initial_probability", "write_examination_cache"]
 
 #: Schemas of ``meta.json`` and ``label_meta.json``, with their version.
 CACHE_SCHEMA, LABEL_SCHEMA, SCHEMA_VERSION = "sirb-examination-cache", "sirb-examination-labels", 1
@@ -56,22 +54,14 @@ META_FILE, LABEL_META_FILE = "meta.json", "label_meta.json"
 #: Cached input arrays, in the order they are written.
 INPUT_ARRAYS = ("pet", "ct", "initial_probability", "initial_segmentation")
 PROBABILITY_ARRAY, SEGMENTATION_ARRAY, LABEL_ARRAY = "initial_probability", "initial_segmentation", "gt"
-#: The whole-volume frame: channel order and file (its meta key is the file's stem).
-FRAME_CHANNELS = ("pet", "ct", "initial_probability")
-FRAME_FILE, FRAME_META_KEY = "whole_volume_frame.npy", "whole_volume_frame"
 #: The initial segmentation rule: probability strictly greater than 0.5.
 SEGMENTATION_THRESHOLD = 0.5
 INITIAL_SEGMENTATION_RULE = f"strict_greater_than_{SEGMENTATION_THRESHOLD}"
 #: Provenance key of the ground-truth file; it is written under ``labels/`` only.
 LABEL_PROVENANCE_KEY = "ground_truth"
-#: Values of padding outside the field of view in the whole-volume frame (CT: air; no initial probability).
-PAD_CT, PAD_PROBABILITY = -1.0, 0.0
 #: Split names an examination cache may record; reading is restricted further by an allow-list.
 SPLITS = ("train", "val", "test")
 DEFAULT_READ_SPLITS = ("train", "val")
-#: Cells along an axis whose direction cosines exceed this are not orthogonal (whole-volume frame planning).
-AXIS_ORTHOGONALITY_ATOL = 1e-4
-_SHAPE_EPS = 1e-6
 
 
 class ExaminationCacheError(RuntimeError):
@@ -185,81 +175,6 @@ def pet_reference_from_examinations(metas: Sequence[Mapping[str, Any]]) -> PetRe
     return PetReference(float(np.median(patient_mu)), float(np.median(patient_s)))
 
 
-# ------------------------------------------------------------------------------------------- whole-volume frame
-@dataclass(frozen=True)
-class _FrameGrid:
-    """The 3 mm grid of an examination as far as the whole-volume frame needs it (ZYX order)."""
-    native_shape: tuple[int, int, int]
-    spacing_mm: tuple[float, float, float]
-    fov_shape: tuple[int, int, int]
-    scale: tuple[float, float, float]      # 3 mm cell step in native index units
-
-
-def _frame_grid(native_shape, affine_zyx, spacing_mm) -> _FrameGrid:
-    """The 3 mm grid keeps the native axis directions, is corner-aligned with the native grid and covers its whole
-    field of view: along each axis ``(n + 0.5) * s_native = (r + 0.5) * s_grid``."""
-    shape = tuple(int(v) for v in native_shape)
-    if len(shape) != 3 or min(shape) < 1:
-        raise ExaminationCacheError(f"native shape must be three positive ints, got {shape}")
-    a = validate_affine_xyz(affine_zyx)
-    target = tuple(float(v) for v in spacing_mm)
-    if len(target) != 3 or min(target) <= 0 or not np.isfinite(target).all():
-        raise ExaminationCacheError(f"grid spacing must be three positive numbers, got {target}")
-    native_spacing = tuple(float(np.linalg.norm(a[:3, k])) for k in range(3))
-    directions = [a[:3, k] / native_spacing[k] for k in range(3)]
-    for i in range(3):
-        for j in range(i + 1, 3):
-            cosine = float(abs(np.dot(directions[i], directions[j])))
-            if cosine > AXIS_ORTHOGONALITY_ATOL:
-                raise ExaminationCacheError(f"native axes {i},{j} are not orthogonal: |cos|={cosine:.3e}")
-    scale = tuple(target[k] / native_spacing[k] for k in range(3))
-    fov = tuple(max(1, int(math.ceil(shape[k] * native_spacing[k] / target[k] - _SHAPE_EPS))) for k in range(3))
-    return _FrameGrid(shape, target, fov, scale)
-
-
-def _frame_cell_index(grid: _FrameGrid, axis: int, size: int) -> np.ndarray:
-    """The frame cell of every native index along ``axis``: the native centre's 3 mm grid position as a fraction of
-    the field of view, times the frame size."""
-    native = np.arange(grid.native_shape[axis], dtype=np.float64)
-    grid_index = (native + 0.5) / grid.scale[axis] - 0.5
-    position = (grid_index + 0.5) / grid.fov_shape[axis]
-    return np.clip(np.floor(position * size).astype(np.int64), 0, size - 1)
-
-
-def _reduce_to_frame(native, grid: _FrameGrid, frame_shape: Sequence[int], *, empty_value: float) -> np.ndarray:
-    """Mean of the native voxels in each frame cell (cells cover the field of view); an empty cell gets
-    ``empty_value``. Separable: one axis at a time."""
-    out = np.asarray(native, dtype=np.float32)
-    for axis in range(3):
-        size = int(frame_shape[axis])
-        cells = _frame_cell_index(grid, axis, size)          # non-decreasing in the native index
-        starts = np.searchsorted(cells, np.arange(size), side="left")
-        stops = np.searchsorted(cells, np.arange(size), side="right")
-        shape = list(out.shape)
-        shape[axis] = size
-        reduced = np.full(shape, np.float32(empty_value), dtype=np.float32)
-        moved_in, moved_out = np.moveaxis(out, axis, 0), np.moveaxis(reduced, axis, 0)
-        for cell in range(size):
-            if stops[cell] > starts[cell]:
-                moved_out[cell] = moved_in[starts[cell]:stops[cell]].mean(axis=0)
-        out = reduced
-    return out
-
-
-def _frame_key(grid: _FrameGrid, frame_shape: Sequence[int]) -> dict:
-    return {"channels": list(FRAME_CHANNELS), "shape": [int(v) for v in frame_shape],
-            "grid_spacing_mm": [float(v) for v in grid.spacing_mm]}
-
-
-def whole_volume_frame(pet, ct, probability, affine_zyx, pet_pad_value: float, *, grid_spacing_mm=(3.0, 3.0, 3.0),
-                       shape=(96, 64, 64)) -> np.ndarray:
-    """[3, *shape] float32: cached PET, CT and initial probability reduced to the whole-volume frame (cell means)."""
-    grid = _frame_grid(np.shape(pet), affine_zyx, grid_spacing_mm)
-    pads = {"pet": float(pet_pad_value), "ct": PAD_CT, "initial_probability": PAD_PROBABILITY}
-    volumes = {"pet": pet, "ct": ct, "initial_probability": probability}
-    return np.stack([_reduce_to_frame(volumes[name], grid, shape, empty_value=pads[name]) for name in FRAME_CHANNELS])
-
-
 # ------------------------------------------------------------------------------------------- writing
 def _refuse_non_finite(examination_id: str, arrays: Mapping[str, Any]) -> None:
     for name, array in arrays.items():
@@ -288,26 +203,19 @@ def _write_json(path: Path, document: Mapping) -> None:
     write_json_atomic(path, document, indent=2, sort_keys=True, ensure_ascii=True)
 
 
-def _absent_probability(shape) -> np.ndarray:
-    blank = np.full(tuple(int(v) for v in shape), PAD_PROBABILITY, dtype=np.float16)
-    blank.flags.writeable = False
-    return blank
-
-
 def write_examination_cache(directory: str | os.PathLike, *, examination_id: str, patient_id: str, split: str,
                             pet_suv, ct_hu, affine_zyx, normalization: Mapping[str, Any], provenance: Mapping[str, Any],
                             initial_probability=None, initial_segmentation=None, ground_truth=None,
-                            segmentation_rule: str = INITIAL_SEGMENTATION_RULE, max_disagreement: float | None = None,
-                            whole_volume_frame_grid: Mapping[str, Any] | None = None) -> dict:
+                            segmentation_rule: str = INITIAL_SEGMENTATION_RULE,
+                            max_disagreement: float | None = None) -> dict:
     """Normalise one examination once and store its native-grid arrays (module docstring). Returns the meta
     document, with the label meta under ``"label"``.
 
     ``initial_segmentation`` is stored as given; with ``initial_probability`` its disagreement with the threshold rule
     is counted and refused above ``max_disagreement`` (a fraction of their union). Without it the rule defines the
     mask. An examination without ``initial_probability`` needs ``initial_segmentation``; it is cached without the
-    probability (``initial_segmentation.probability_cached: false``) and that frame channel holds 0.
-    ``whole_volume_frame_grid`` (``grid_spacing_mm``, ``shape``) adds the whole-volume frame. ``provenance`` maps
-    file roles to raw-relative paths; the ground-truth entry goes to the label meta only. Every refusal happens before
+    probability (``initial_segmentation.probability_cached: false``). ``provenance`` maps file roles to the paths
+    read (relative to their folder); the ground-truth entry goes to the label meta only. Every refusal happens before
     anything is written; an examination already in the cache is refused.
     """
     if split not in SPLITS:
@@ -370,14 +278,6 @@ def write_examination_cache(directory: str | os.PathLike, *, examination_id: str
                 "voxels_disagreeing_with_rule": int((mask != ruled).sum()) if has_probability else None,
                 "probability_cached": has_probability},
             "provenance": {key: value for key, value in provenance.items() if key != LABEL_PROVENANCE_KEY}}
-    if whole_volume_frame_grid is not None:
-        grid = _frame_grid(shape, affine, whole_volume_frame_grid["grid_spacing_mm"])
-        key = _frame_key(grid, whole_volume_frame_grid["shape"])
-        probability = arrays[PROBABILITY_ARRAY] if has_probability else _absent_probability(shape)
-        frames = whole_volume_frame(arrays["pet"], arrays["ct"], probability, affine, float(pet_stats["pad_value"]),
-                                    grid_spacing_mm=key["grid_spacing_mm"], shape=key["shape"])
-        _save_array(input_dir / FRAME_FILE, frames)
-        meta[FRAME_META_KEY] = key
     label_meta = None
     if ground_truth is not None:
         label_dir = root / LABELS_FOLDER / examination_id

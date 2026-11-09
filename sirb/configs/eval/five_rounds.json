@@ -7,11 +7,6 @@
     "draw_on_empty_ground_truth": false
   },
   "predictor": {
-    "local_update": false,
-    "flip_average": true,
-    "precision": "fp32",
-    "compile": false,
-    "near_margin_mm": 0.0,
     "window_batch": 4,
     "voxel_chunk": 262144
   },

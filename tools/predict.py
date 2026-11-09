@@ -1,12 +1,14 @@
 """Correct the examinations of one split with SIRB and the simulated user, and write the mask of every round.
 
     python tools/predict.py --config sirb/configs/eval/five_rounds.json --checkpoint checkpoints/sirb_psma.pt \\
-        --split val [--run NAME] [--examination ID ...] [--device cuda] [key=value ...]
+        --split val [--mode standard|fast] [--run NAME] [--examination ID ...] [--device cuda] [key=value ...]
 
 Every examination of the split (or each one given with the repeatable --examination) is corrected for
 ``session.rounds`` rounds (``sirb.interaction.session.run_session``) in its drawing style
-(``<split>_styles.json`` of the split lists, ``data.splits``), with the predictor options of the configuration's
-``predictor`` section. Written under ``<paths.results>/<run>/predictions/<split>/``:
+(``<split>_styles.json`` of the split lists, ``data.splits``). The predictor runs in the inference mode ``--mode``
+(``standard`` by default, or ``fast``; ``sirb.sirb_predictor.MODES``), and the configuration's ``predictor``
+section sets the remaining options or overrides the mode's. Written under
+``<paths.results>/<run>/predictions/<split>/``:
 
     <examination>.npz    masks (rounds 0..N, bool ZYX), scribbles (rounds 1..N, empty when skipped),
                          correction_types (+1 addition, -1 removal, 0 skipped), skipped
@@ -34,7 +36,7 @@ if str(REPOSITORY) not in sys.path:
 
 from sirb.interaction.scribble_simulator import STYLES, ScribbleSimulator  # noqa: E402
 from sirb.interaction.session import Examination, SessionResult, run_session  # noqa: E402
-from sirb.sirb_predictor import SIRBPredictor  # noqa: E402
+from sirb.sirb_predictor import DEFAULT_MODE, MODES, SIRBPredictor  # noqa: E402
 from sirb.utils.config import add_config_arguments, load_config, save_config  # noqa: E402
 from sirb.utils.io import read_json, read_npz, write_json_atomic, write_npz_atomic  # noqa: E402
 from sirb.utils.logging import get_logger  # noqa: E402
@@ -153,10 +155,12 @@ def finished(folder: Path, examination_id: str, settings: Mapping) -> bool:
     return True
 
 
-def session_settings(config: Mapping[str, Any], predictor: SIRBPredictor, checkpoint: str | None) -> dict:
-    """What decides a session's outputs: checkpoint, model, predictor options and session settings."""
+def session_settings(config: Mapping[str, Any], predictor: SIRBPredictor, checkpoint: str | None,
+                     mode: str) -> dict:
+    """What decides a session's outputs: checkpoint, model, inference mode, predictor options and session settings."""
     return {"checkpoint": None if checkpoint is None else str(checkpoint), "model": dict(config["model"]),
-            "predictor": predictor.options, "session": checked_section(config, "session", SESSION_KEYS)}
+            "mode": mode, "predictor": predictor.options,
+            "session": checked_section(config, "session", SESSION_KEYS)}
 
 
 def predict_examinations(examinations: Iterable[str], *, cache: Any, predictor: Any, simulator: Any,
@@ -187,8 +191,8 @@ def predict_examinations(examinations: Iterable[str], *, cache: Any, predictor: 
 def prepare(config: Mapping[str, Any], args: argparse.Namespace) -> tuple[SIRBPredictor, dict, Path]:
     """(predictor, settings, predictions folder) of a run; writes the merged configuration."""
     apply_runtime(config)
-    predictor = SIRBPredictor.from_config(config, args.checkpoint, device=args.device)
-    settings = session_settings(config, predictor, args.checkpoint)
+    predictor = SIRBPredictor.from_config(config, args.checkpoint, mode=args.mode, device=args.device)
+    settings = session_settings(config, predictor, args.checkpoint, args.mode)
     folder = run_folder(config, args.run) / PREDICTIONS / args.split
     save_config(config, folder / "config.json")
     return predictor, settings, folder
@@ -199,6 +203,9 @@ def add_run_arguments(parser: argparse.ArgumentParser, *, checkpoint_required: b
                         help="the examinations to use; the test set is read only when given explicitly")
     parser.add_argument("--checkpoint", required=checkpoint_required, default=None,
                         help="SIRB checkpoint (training/train.py writes one)")
+    parser.add_argument("--mode", choices=list(MODES), default=DEFAULT_MODE,
+                        help="inference mode: standard (flip averaging, FP32) or fast (one pass, bfloat16, "
+                             "torch.compile); both compute near the scribble (default: %(default)s)")
     parser.add_argument("--run", default=None, help="results folder name under paths.results (default: config 'run')")
     parser.add_argument("--examination", action="append", default=None, metavar="ID", dest="examinations",
                         help="only this examination of the split; repeat for several")

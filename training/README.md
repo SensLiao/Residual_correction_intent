@@ -67,8 +67,9 @@ and the rest for the ground-truth-corrected states (or the earlier-version state
 After training iterations 10,000, 25,000 and 40,000 (`data.self_generated.refresh`) the trainer saves a checkpoint and
 runs a frozen copy of the current model on every training examination of one patient half (half 0, then 1, then 0):
 five correction rounds with the simulated user in the examination's drawing style, the predictor options of
-`train.refresh.predictor` (flip averaging, FP32, as in the evaluation). The states of these rounds and their state pairs
-go to `SIRB_PREPROCESSED/states/self_generated/<run>/self_generated_half<h>_iteration<i>/`; once every examination of
+`train.refresh.predictor` (every window of the examination, flip averaging, FP32: the computation of the paper, set
+there in full and not taken from the inference modes). The states of these rounds and their state pairs go to
+`SIRB_PREPROCESSED/states/self_generated/<run>/self_generated_half<h>_iteration<i>/`; once every examination of
 the half is done the pool is published (`pool.json`) and replaces that half's earlier self-generated states in the
 sampling from the next block of eight iterations on. A refresh that stops part-way resumes with the examinations
 that are not yet done.

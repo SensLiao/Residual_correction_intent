@@ -14,21 +14,6 @@
       "psma_69ea0c011af2e2d4_2016-07-29",
       "psma_faa4c90c3d2d53a3_2019-08-10",
       "psma_a1e1b43ebcf4e89c_2014-08-14"
-    ],
-    "modes": {
-      "original": {
-        "local_update": false,
-        "flip_average": true,
-        "precision": "fp32",
-        "compile": false
-      },
-      "fast": {
-        "local_update": true,
-        "flip_average": false,
-        "precision": "bf16",
-        "compile": true,
-        "near_margin_mm": 0.0
-      }
-    }
+    ]
   }
 }

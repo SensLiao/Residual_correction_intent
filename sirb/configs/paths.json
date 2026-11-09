@@ -1,6 +1,7 @@
 {
   "paths": {
     "raw": "${env:SIRB_RAW,./datasets/PSMA-PET-CT-Lesions}",
+    "initial_segmentations": "${env:SIRB_INITIAL_SEGMENTATIONS,./datasets/initial_segmentations}",
     "preprocessed": "${env:SIRB_PREPROCESSED,./datasets/preprocessed}",
     "results": "${env:SIRB_RESULTS,./sirb_results}"
   }

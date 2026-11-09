@@ -7,10 +7,15 @@
 *.nii.gz
 *.npy
 *.npz
-# datasets/ holds the downloaded data; only its README files are tracked.
-/datasets/**
-!/datasets/**/
-!/datasets/**/README.md
+# datasets/ holds the downloaded dataset, the initial segmentations and the preprocessed data; only the two README
+# files are tracked.
+/datasets/*
+!/datasets/PSMA-PET-CT-Lesions/
+!/datasets/initial_segmentations/
+/datasets/PSMA-PET-CT-Lesions/*
+!/datasets/PSMA-PET-CT-Lesions/README.md
+/datasets/initial_segmentations/*
+!/datasets/initial_segmentations/README.md
 __pycache__/
 *.pyc
 .pytest_cache/

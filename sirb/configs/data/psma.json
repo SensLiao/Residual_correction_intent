@@ -4,7 +4,6 @@
     "raw": {
       "images": "imagesTr",
       "labels": "labelsTr",
-      "initial_segmentations": "initial_segmentations",
       "ct_suffix": "_0000",
       "pet_suffix": "_0001",
       "extension": ".nii.gz",
@@ -12,11 +11,7 @@
     },
     "splits": "splits",
     "cache": {
-      "directory": "examinations",
-      "whole_volume_frame": {
-        "grid_spacing_mm": [3.0, 3.0, 3.0],
-        "shape": [96, 64, 64]
-      }
+      "directory": "examinations"
     },
     "normalization": {
       "ct_clip": [-1000.0, 1000.0],

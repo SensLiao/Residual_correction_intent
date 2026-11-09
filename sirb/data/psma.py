@@ -1,17 +1,19 @@
 """The PSMA PET/CT data in nnU-Net raw format: examinations, patient-level splits and scribble drawing styles.
 
-Raw layout under ``SIRB_RAW`` (the folder names, channel suffixes and the probability key are ``data.raw`` of
-``sirb/configs/data/psma.json``)::
+Two folders side by side: the dataset (``paths.raw``) and the initial segmentations, made by any segmentation model
+(``paths.initial_segmentations``). The folder names, channel suffixes and the probability key are ``data.raw`` of
+``sirb/configs/data/psma.json``::
 
-    imagesTr/<examination>_0000.nii.gz           CT (HU)
-    imagesTr/<examination>_0001.nii.gz           PET (SUV)
-    labelsTr/<examination>.nii.gz                ground truth (lesion voxels > 0)
-    initial_segmentations/<examination>.nii.gz   initial segmentation (voxels > 0)
-    initial_segmentations/<examination>.npz      optional: the foreground probability of the initial segmentation
-                                                 model (float, voxel order of the NIfTI files)
+    <paths.raw>/imagesTr/<examination>_0000.nii.gz        CT (HU)
+    <paths.raw>/imagesTr/<examination>_0001.nii.gz        PET (SUV)
+    <paths.raw>/labelsTr/<examination>.nii.gz             ground truth (lesion voxels > 0)
+    <paths.initial_segmentations>/<examination>.nii.gz   initial segmentation (voxels > 0)
+    <paths.initial_segmentations>/<examination>.npz      optional: the foreground probability of the model that made
+                                                         it (float, voxel order of the NIfTI files)
 
 An examination id is ``psma_<patient>_<date>``; its patient id is the id without the date. The split lists in
 ``splits/`` are patient-level: no patient has examinations in two of the training, validation and test sets.
+:func:`split_patients` and :func:`nnunet_folds` are the rules that made them (``tools/make_splits.py``).
 
 Every scribble of an examination is drawn in one of the three styles of the official simulator; the style belongs to
 the examination (:func:`assign_drawing_styles`). The training set is divided by patient into two halves
@@ -30,13 +32,20 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
-__all__ = ["DRAWING_STYLES", "PATIENT_HALVES", "RAW_FILES", "SPLIT_NAMES", "RawExamination", "RawLayout",
-           "RawDataError", "SplitError", "assign_drawing_styles", "check_patient_level", "patient_half", "patient_id",
-           "raw_files", "read_drawing_styles", "read_raw_examination", "read_split", "splits_directory", "xyz_to_zyx",
+__all__ = ["DRAWING_STYLES", "FOLD_SALT", "PATIENT_HALVES", "PATIENT_SALT", "RAW_FILES", "SPLIT_NAMES",
+           "SPLIT_PARTITIONS", "RawExamination", "RawLayout", "RawDataError", "SplitError", "assign_drawing_styles",
+           "check_patient_level", "nnunet_folds", "patient_half", "patient_id", "raw_files", "read_drawing_styles",
+           "read_raw_examination", "read_split", "split_patients", "splits_directory", "xyz_to_zyx",
            "zyx_affine_from_xyz"]
 
 #: The split lists shipped in ``splits/``; ``timing`` lists validation examinations.
 SPLIT_NAMES = ("train", "val", "test", "timing")
+#: The patient-level sets that :func:`split_patients` cuts, in the order they are cut.
+SPLIT_PARTITIONS = ("train", "val", "test")
+#: Salt of the patient ranking of :func:`split_patients` (SHA-256 of "<salt>|<seed>|<casefolded patient id>").
+PATIENT_SALT = "PETCT-STABLE-PATIENT-HASH-v1"
+#: Salt of the patient ranking of :func:`nnunet_folds` (SHA-256 of "<salt>|<casefolded patient id>").
+FOLD_SALT = "PETCT-M0-EXCLTEST-FOLD-v1"
 #: The scribble styles of the official autoPET V simulator, in the order styles are dealt.
 DRAWING_STYLES = ("centerline", "random", "boundary")
 #: Salt of the style assignment (the examinations are ordered by SHA-256 of "<salt>|<examination id>").
@@ -106,6 +115,67 @@ def check_patient_level(splits: Mapping[str, Iterable[str]]) -> dict[str, set[st
     return patients
 
 
+def _patients_of(examination_ids: Iterable[str]) -> dict[str, list[str]]:
+    """Casefolded patient id -> its examinations (sorted), after checking that the ids are unique."""
+    if isinstance(examination_ids, (str, bytes)):
+        raise SplitError("a split needs a list of examination ids, not one string")
+    ids = [str(examination) for examination in examination_ids]
+    if not ids or len(set(ids)) != len(ids):
+        raise SplitError("a split needs a non-empty list of unique examination ids")
+    patients: dict[str, list[str]] = {}
+    for examination in ids:
+        patients.setdefault(patient_id(examination).casefold(), []).append(examination)
+    return {patient: sorted(examinations) for patient, examinations in patients.items()}
+
+
+def split_patients(examination_ids: Iterable[str], seed: int, patient_counts: Sequence[int]) -> dict[str, list[str]]:
+    """The patient-level training, validation and test sets of ``examination_ids``.
+
+    The patients (casefolded) are ordered by the SHA-256 of ``"<PATIENT_SALT>|<seed>|<patient>"`` (ties by the
+    patient id); the first ``patient_counts[0]`` patients form the training set, the next ``patient_counts[1]`` the
+    validation set and the last ``patient_counts[2]`` the test set, each with all its patients' examinations. The
+    counts must add up to the number of patients. Returns :data:`SPLIT_PARTITIONS` -> sorted examination ids.
+    """
+    patients = _patients_of(examination_ids)
+    counts = [int(count) for count in patient_counts]
+    if len(counts) != len(SPLIT_PARTITIONS) or any(count < 1 for count in counts) or sum(counts) != len(patients):
+        raise SplitError(f"patient counts actual={counts}, expected {len(SPLIT_PARTITIONS)} positive numbers adding up "
+                         f"to the {len(patients)} patients")
+    ranked = sorted(patients, key=lambda patient: (
+        hashlib.sha256(f"{PATIENT_SALT}|{int(seed)}|{patient}".encode("utf-8")).hexdigest(), patient))
+    splits, start = {}, 0
+    for name, count in zip(SPLIT_PARTITIONS, counts):
+        splits[name] = sorted(examination for patient in ranked[start:start + count]
+                              for examination in patients[patient])
+        start += count
+    check_patient_level(splits)
+    return splits
+
+
+def nnunet_folds(examination_ids: Iterable[str], folds: int = 5) -> list[dict[str, list[str]]]:
+    """Patient-level cross-validation folds of ``examination_ids`` in nnU-Net's ``splits_final.json`` format.
+
+    The patients (casefolded) are ordered by the SHA-256 of ``"<FOLD_SALT>|<patient>"``, and each in turn joins the
+    fold that holds the fewest examinations so far (the lowest fold on ties). Fold ``k`` validates on the
+    examinations of its patients and trains on all the others, so every examination is validated in exactly one fold.
+    """
+    patients = _patients_of(examination_ids)
+    if isinstance(folds, bool) or not isinstance(folds, int) or not 2 <= folds <= len(patients):
+        raise SplitError(f"folds actual={folds!r}, expected an integer from 2 to the {len(patients)} patients")
+    ranked = sorted(patients, key=lambda patient: hashlib.sha256(f"{FOLD_SALT}|{patient}".encode("utf-8")).hexdigest())
+    held_out: list[list[str]] = [[] for _ in range(folds)]
+    for patient in ranked:
+        fold = min(range(folds), key=lambda index: len(held_out[index]))
+        held_out[fold].extend(patients[patient])
+    pool = sorted(examination for examinations in patients.values() for examination in examinations)
+    result = []
+    for validation in held_out:
+        validated = set(validation)
+        result.append({"train": [examination for examination in pool if examination not in validated],
+                       "val": sorted(validation)})
+    return result
+
+
 # ------------------------------------------------------------------------------------------- drawing styles
 def assign_drawing_styles(examination_ids: Sequence[str]) -> dict[str, str]:
     """One drawing style per examination: the examinations are ordered by the SHA-256 of
@@ -145,7 +215,6 @@ class RawLayout:
     """Folder and file names of the raw dataset (``data.raw``)."""
     images: str = "imagesTr"
     labels: str = "labelsTr"
-    initial_segmentations: str = "initial_segmentations"
     ct_suffix: str = "_0000"
     pet_suffix: str = "_0001"
     extension: str = ".nii.gz"
@@ -163,14 +232,16 @@ class RawLayout:
 RAW_FILES = ("ct", "pet", "ground_truth", "initial_segmentation", "initial_probability")
 
 
-def raw_files(raw_root: str | os.PathLike, examination_id: str, layout: RawLayout = RawLayout()) -> dict[str, Path]:
-    """Paths of the raw files of one examination (:data:`RAW_FILES`)."""
-    root = Path(raw_root)
+def raw_files(raw_root: str | os.PathLike, initial_segmentations_root: str | os.PathLike, examination_id: str,
+              layout: RawLayout = RawLayout()) -> dict[str, Path]:
+    """Paths of the raw files of one examination (:data:`RAW_FILES`): the images and the ground truth in the dataset
+    folder ``raw_root``, the initial segmentation and its optional probability in ``initial_segmentations_root``."""
+    root, initial = Path(raw_root), Path(initial_segmentations_root)
     return {"ct": root / layout.images / f"{examination_id}{layout.ct_suffix}{layout.extension}",
             "pet": root / layout.images / f"{examination_id}{layout.pet_suffix}{layout.extension}",
             "ground_truth": root / layout.labels / f"{examination_id}{layout.extension}",
-            "initial_segmentation": root / layout.initial_segmentations / f"{examination_id}{layout.extension}",
-            "initial_probability": root / layout.initial_segmentations / f"{examination_id}.npz"}
+            "initial_segmentation": initial / f"{examination_id}{layout.extension}",
+            "initial_probability": initial / f"{examination_id}.npz"}
 
 
 def xyz_to_zyx(array: np.ndarray) -> np.ndarray:
@@ -211,18 +282,20 @@ class RawExamination:
     provenance: dict = field(default_factory=dict)
 
 
-def read_raw_examination(raw_root: str | os.PathLike, examination_id: str, layout: RawLayout = RawLayout(), *,
+def read_raw_examination(raw_root: str | os.PathLike, initial_segmentations_root: str | os.PathLike,
+                         examination_id: str, layout: RawLayout = RawLayout(), *,
                          read_probability: bool = True) -> RawExamination:
     """Read the CT, PET, ground truth, initial segmentation and (when present) its probability of one examination.
 
     The CT, ground truth and initial segmentation must have the PET's shape and affine (within
     :data:`AFFINE_ATOL_MM`), the probability its shape. Arrays come back in ZYX order with the matching affine. The
-    provenance holds the raw-relative path of every file read; two files with the same bytes (an image pointing at
-    the ground-truth file, say) are refused.
+    provenance holds the path of every file read relative to its folder (``raw_root`` for the images and the ground
+    truth, ``initial_segmentations_root`` for the initial segmentation and its probability); two files with the same
+    bytes (an image pointing at the ground-truth file, say) are refused.
     """
     import nibabel as nib  # noqa: PLC0415  (only the raw reader needs nibabel)
 
-    files = raw_files(raw_root, examination_id, layout)
+    files = raw_files(raw_root, initial_segmentations_root, examination_id, layout)
     sources = list(RAW_FILES[:4])
     for name in sources:
         if not files[name].is_file():
@@ -253,8 +326,10 @@ def read_raw_examination(raw_root: str | os.PathLike, examination_id: str, layou
                   if filecmp.cmp(files[a], files[b], shallow=False)}
     if duplicated:
         raise RawDataError(f"{examination_id}: raw files have the same bytes: {duplicated}")
-    root = Path(raw_root)
-    provenance = {name: files[name].relative_to(root).as_posix() for name in sources}
+    roots = {"ct": Path(raw_root), "pet": Path(raw_root), "ground_truth": Path(raw_root),
+             "initial_segmentation": Path(initial_segmentations_root),
+             "initial_probability": Path(initial_segmentations_root)}
+    provenance = {name: files[name].relative_to(roots[name]).as_posix() for name in sources}
     return RawExamination(
         examination_id=str(examination_id),
         pet_suv=xyz_to_zyx(np.asarray(reference.dataobj, dtype=np.float32)),

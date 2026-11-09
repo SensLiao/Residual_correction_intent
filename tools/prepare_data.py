@@ -1,11 +1,13 @@
-"""Write the examination cache of one split from the raw dataset and the initial segmentations.
+"""Write the examination cache of one split from the dataset and the initial segmentations.
 
-Reads ``SIRB_RAW`` (``imagesTr/``, ``labelsTr/``, ``initial_segmentations/``; folder names in ``data.raw``) for the
-examinations of ``splits/<split>.txt`` and writes ``SIRB_PREPROCESSED/<data.cache.directory>/``
-(``sirb.data.preprocessing``): normalised PET and CT, the initial segmentation (and its probability when the raw data
-has one), the ground truth, and the whole-volume frame. Every written examination adds one row to
-``prepare_<split>.jsonl`` there. An examination already in the cache is refused (``--skip-existing`` skips it), and
-so is an initial segmentation that equals a non-empty ground truth voxel for voxel.
+Reads the examinations of ``splits/<split>.txt`` from two folders side by side: the dataset ``paths.raw``
+(``SIRB_RAW``: ``imagesTr/``, ``labelsTr/``; names in ``data.raw``) and the initial segmentations
+``paths.initial_segmentations`` (``SIRB_INITIAL_SEGMENTATIONS``: ``<examination>.nii.gz``, optionally
+``<examination>.npz``). Writes ``SIRB_PREPROCESSED/<data.cache.directory>/`` (``sirb.data.preprocessing``):
+normalised PET and CT, the initial segmentation (and its probability when there is one) and the ground truth.
+Every written examination adds one row to ``prepare_<split>.jsonl`` there. An examination already in the cache is
+refused (``--skip-existing`` skips it), and so is an initial segmentation that equals a non-empty ground truth voxel
+for voxel.
 
 The test set is prepared only when asked for with ``--split test``.
 
@@ -84,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         ids = [examination for examination in ids if examination in set(args.examinations)]
     ids = ids[: args.limit]
     raw_root, layout = Path(config["paths"]["raw"]), RawLayout.from_config(data["raw"])
+    initial_root = Path(config["paths"]["initial_segmentations"])
     directory.mkdir(parents=True, exist_ok=True)
     save_config(config, directory / f"prepare_{args.split}_config.json")
     rows_path = directory / f"prepare_{args.split}.jsonl"
@@ -91,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.skip_existing and (directory / "inputs" / examination / "meta.json").is_file():
             print(f"[prepare] {number}/{len(ids)} {examination}: cached already, skipped", flush=True)
             continue
-        raw = read_raw_examination(raw_root, examination, layout)
+        raw = read_raw_examination(raw_root, initial_root, examination, layout)
         if raw.ground_truth.any() and np.array_equal(raw.initial_segmentation, raw.ground_truth):
             print(f"[prepare] REFUSED: {examination}: the initial segmentation equals the non-empty ground truth "
                   f"voxel for voxel ({int(raw.ground_truth.sum())} voxels)", file=sys.stderr)
@@ -102,8 +105,7 @@ def main(argv: list[str] | None = None) -> int:
             provenance=raw.provenance, initial_probability=raw.initial_probability,
             initial_segmentation=raw.initial_segmentation, ground_truth=raw.ground_truth,
             segmentation_rule=data["initial_segmentation"]["rule"],
-            max_disagreement=data["initial_segmentation"]["max_disagreement"],
-            whole_volume_frame_grid=data["cache"]["whole_volume_frame"])
+            max_disagreement=data["initial_segmentation"]["max_disagreement"])
         append_rows(rows_path, [{
             "examination_id": examination, "patient_id": meta["patient_id"], "split": meta["split"],
             "shape_zyx": meta["shape_zyx"], "initial_segmentation": meta["initial_segmentation"],

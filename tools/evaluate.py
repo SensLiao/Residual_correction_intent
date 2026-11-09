@@ -1,10 +1,11 @@
 """Score the masks written by tools/predict.py with the official metrics and summarise them by patient.
 
     python tools/evaluate.py --config sirb/configs/eval/five_rounds.json --split val [--run NAME] \\
-        [--checkpoint checkpoints/sirb_psma.pt] [--examination ID ...] [key=value ...]
+        [--checkpoint checkpoints/sirb_psma.pt] [--mode standard|fast] [--examination ID ...] [key=value ...]
 
 Reads ``<paths.results>/<run>/predictions/<split>/<examination>.npz`` of every examination of the split; with
-``--checkpoint``, missing predictions are made first, exactly as tools/predict.py makes them. Each examination's masks
+``--checkpoint``, missing predictions are made first, exactly as tools/predict.py makes them (in ``--mode``,
+``standard`` by default). Each examination's masks
 of rounds 0..N are scored against its ground truth (``sirb.evaluation.metrics.score_examination``) and summarised
 (``sirb.evaluation.protocol``) with the patient-cluster bootstrap of ``evaluation.bootstrap``. Written under
 ``<paths.results>/<run>/scores/<split>/``:

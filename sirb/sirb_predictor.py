@@ -2,7 +2,7 @@
 
 Usage, in the style of SAM 2's predictors::
 
-    predictor = SIRBPredictor.from_config(config, "checkpoints/sirb_psma.pt", device="cuda")
+    predictor = SIRBPredictor.from_config(config, "checkpoints/sirb_psma.pt", mode="standard", device="cuda")
     predictor.set_examination(Examination(pet_zyx, ct_zyx, affine_xyz, initial_segmentation_zyx))
     prediction = predictor.predict(scribble_zyx, "addition")   # prediction.updated_mask is the new current mask
     predictor.reset()                                          # back to the initial segmentation
@@ -11,7 +11,7 @@ Usage, in the style of SAM 2's predictors::
 :meth:`SIRBPredictor.predict_state` is the low-level call on one :class:`~sirb.data.observations.State`, used by
 ``sirb.interaction.session``, which builds the states itself.
 
-One prediction (the inference of the paper):
+One prediction with every window (the computation of the paper; ``local_update`` below restricts step 2):
 
 1. The scribble's sources: representatives and grouping (``sirb.data.geometry``, ``sirb.modeling.source_encoder``).
 2. For each orientation (the examination as it is and, with ``flip_average``, flipped left-right): the state context
@@ -27,10 +27,19 @@ reuses the sources and flips only the scribble window's affine. The 0.5 decision
 editable voxels whose probability lies within ``RECHECK_BAND`` of the threshold are decided again with the CPU
 softmax, so every decision equals the CPU decision.
 
+Two inference modes (:data:`MODES`), chosen with ``from_config(..., mode=...)``:
+
+* ``"standard"``: ``local_update`` on, ``flip_average`` on, FP32, no compile.
+* ``"fast"``: ``local_update`` on, ``flip_average`` off, bfloat16, ``torch.compile``.
+
+Both compute only near the scribble and apply only the change components connected to it. The options below can also
+be set one by one, in a configuration's ``predictor`` section or as keywords; ``local_update=False`` computes every
+window of the examination.
+
 Options (they change outputs and are reported with them):
 
-* ``flip_average`` (default on, as in the paper): average the logits of both orientations; off runs one pass.
-* ``local_update`` (default off): run first only the windows near the scribble (the world box of its 3^3 dilation,
+* ``flip_average``: average the logits of both orientations; off runs one pass.
+* ``local_update``: run first only the windows near the scribble (the world box of its 3^3 dilation,
   the seed voxels, widened by ``near_margin_mm``), decide only the voxels whose covering windows have all run, and
   apply only the accepted change components (18-connected) that touch a seed voxel. Windows are added while a kept
   component touches an undecided editable voxel or a seed voxel is undecided, and all windows run once more than
@@ -72,13 +81,21 @@ from .modeling.native_refinement import FEATURE_WIDTH
 from .modeling.sirb import SIRB
 from .modeling.source_encoder import group_scribble
 
-__all__ = ["LOCAL_FALLBACK_FRACTION", "PRECISIONS", "PREDICTOR_OPTIONS", "RECHECK_BAND", "Prediction",
-           "SIRBPredictor"]
+__all__ = ["DEFAULT_MODE", "LOCAL_FALLBACK_FRACTION", "MODES", "PRECISIONS", "PREDICTOR_OPTIONS", "RECHECK_BAND",
+           "Prediction", "SIRBPredictor"]
 
 PRECISIONS = ("fp32", "bf16")
 #: Keyword options of SIRBPredictor that a configuration's ``predictor`` section may set.
 PREDICTOR_OPTIONS = ("local_update", "flip_average", "precision", "compile", "near_margin_mm", "window_batch",
                      "voxel_chunk")
+#: The inference modes of :meth:`SIRBPredictor.from_config`: the options each one sets.
+MODES = {
+    "standard": {"local_update": True, "flip_average": True, "precision": "fp32", "compile": False,
+                 "near_margin_mm": 0.0},
+    "fast": {"local_update": True, "flip_average": False, "precision": "bf16", "compile": True,
+             "near_margin_mm": 0.0},
+}
+DEFAULT_MODE = "standard"
 #: Device probabilities this close to TARGET_THRESHOLD are decided again with the CPU softmax.
 RECHECK_BAND = 1e-5
 #: Local update: once more than this fraction of the windows (both orientations) was needed, all windows run.
@@ -391,7 +408,7 @@ class _ExaminationConstants:
     valid: np.ndarray
     affine_xyz: np.ndarray
     pet_pad_value: float
-    original: _PassConstants
+    unflipped: _PassConstants
     flipped: _PassConstants | None
 
     def serves(self, state: State, flip_average: bool) -> bool:
@@ -585,7 +602,8 @@ class SIRBPredictor:
     """SIRB inference on one examination (module docstring).
 
     ``grid_spacing_mm`` and ``whole_volume_shape`` are those the model was trained with (its configuration's model
-    section; :meth:`from_config` reads them).
+    section; :meth:`from_config` reads them). The constructor applies no mode: each option is a keyword argument,
+    and their defaults compute every window. :meth:`from_config` starts from a mode of :data:`MODES`.
     """
 
     def __init__(self, model: SIRB, *, grid_spacing_mm, whole_volume_shape, device="cpu", local_update: bool = False,
@@ -631,11 +649,16 @@ class SIRBPredictor:
         self._history: InteractionHistory | None = None
 
     @classmethod
-    def from_config(cls, config: Mapping[str, Any], checkpoint=None, *, device="cpu", **options) -> "SIRBPredictor":
-        """The predictor of a configuration: ``build_sirb(config, checkpoint)`` and the options of its
-        ``predictor`` section (keyword ``options`` override them)."""
+    def from_config(cls, config: Mapping[str, Any], checkpoint=None, *, mode: str = DEFAULT_MODE, device="cpu",
+                    **options) -> "SIRBPredictor":
+        """The predictor of a configuration: ``build_sirb(config, checkpoint)`` with the options of ``mode`` (a key of
+        :data:`MODES`), then those of the configuration's ``predictor`` section, then the keyword ``options``, each
+        overriding the one before."""
+        if mode not in MODES:
+            raise ValueError(f"mode must be one of {sorted(MODES)}, got {mode!r}")
         settings = model_settings(config)
-        merged = dict(config.get("predictor", {}))
+        merged = dict(MODES[mode])
+        merged.update(config.get("predictor", {}))
         merged.update(options)
         unknown = sorted(set(merged) - set(PREDICTOR_OPTIONS))
         if unknown:
@@ -704,13 +727,13 @@ class SIRBPredictor:
         started = time.perf_counter()
         case = self._examination_constants(state)
         representatives = geometry.scribble_representatives(state.scribble_zyx, state.affine_xyz,
-                                                            case.original.frames.grid_affine_xyz, self.window_size,
+                                                            case.unflipped.frames.grid_affine_xyz, self.window_size,
                                                             native_valid_zyx=state.valid_zyx)
         sources = group_scribble(state.scribble_zyx, state.affine_xyz, representatives,
                                  native_valid_zyx=state.valid_zyx)
         arrays = self._round_arrays(state)
         view = _View.of(state)
-        orientations = [(view, case.original, representatives.window_affine_xyz, False)]
+        orientations = [(view, case.unflipped, representatives.window_affine_xyz, False)]
         if self.flip_average:
             orientations.append((view.flipped(), case.flipped,
                                  geometry.flip_affine_xyz(representatives.window_affine_xyz, (self.window_size,) * 3),
@@ -826,14 +849,14 @@ class SIRBPredictor:
         ct = torch.as_tensor(np.array(state.ct_zyx, dtype=np.float32), device=self.device)
         valid = torch.as_tensor(np.array(state.valid_zyx, dtype=bool), device=self.device)
         view = _View.of(state)
-        original = self._pass_constants(view, frames, pet, ct, valid)
+        unflipped = self._pass_constants(view, frames, pet, ct, valid)
         flipped = None
         if self.flip_average:
             flipped = self._pass_constants(view.flipped(), frames.flipped(), torch.flip(pet, dims=[2]),
                                            torch.flip(ct, dims=[2]), torch.flip(valid, dims=[2]))
         self._case = _ExaminationConstants(state.pet_zyx, state.ct_zyx, state.valid_zyx,
                                            np.array(state.affine_xyz, dtype=np.float64), float(state.pet_pad_value),
-                                           original, flipped)
+                                           unflipped, flipped)
         return self._case
 
     def _static_device_state(self, view: _View, pet, ct, valid) -> DeviceState:

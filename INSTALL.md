@@ -10,7 +10,7 @@ conda activate sirb
 ```
 
 `environment.yml` installs PyTorch from pip. For a GPU, install the PyTorch build that matches your CUDA version
-instead, for example:
+instead (the command for each version is on <https://pytorch.org/get-started/locally/>), for example:
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cu128
@@ -24,25 +24,27 @@ pip install -e .
 
 ## Data and result folders
 
-Three environment variables say where the data and the results are. Only `sirb/configs/paths.json` refers to them;
+Four environment variables say where the data and the results are. Only `sirb/configs/paths.json` refers to them;
 the data, training and evaluation configurations inherit it.
 
 | Variable | Contents | Default |
 |---|---|---|
-| `SIRB_RAW` | `imagesTr/<examination>_0000.nii.gz` (CT), `imagesTr/<examination>_0001.nii.gz` (PET), `labelsTr/` (ground truth), `initial_segmentations/` (the initial segmentation of each examination) | `./datasets/PSMA-PET-CT-Lesions` |
+| `SIRB_RAW` | the dataset: `imagesTr/<examination>_0000.nii.gz` (CT), `imagesTr/<examination>_0001.nii.gz` (PET), `labelsTr/<examination>.nii.gz` (ground truth) | `./datasets/PSMA-PET-CT-Lesions` |
+| `SIRB_INITIAL_SEGMENTATIONS` | the initial segmentation of each examination, `<examination>.nii.gz`, from any segmentation model | `./datasets/initial_segmentations` |
 | `SIRB_PREPROCESSED` | the preprocessed examinations read during training and evaluation, and the stored states used for training | `./datasets/preprocessed` |
 | `SIRB_RESULTS` | one folder per experiment: `config.json`, `checkpoints/`, `logs/`, `predictions/<split>/`, `scores/<split>/` | `./sirb_results` |
 
-What to download and where to put it is in [`datasets/README.md`](datasets/README.md). With the data in the default
-folders and the commands run from the repository root, no variable needs to be set. To keep the data elsewhere:
+With the data in the default folders and the commands run from the repository root, no variable needs to be set. To
+keep the data elsewhere:
 
 ```bash
-export SIRB_RAW=<raw folder>
+export SIRB_RAW=<dataset folder>
+export SIRB_INITIAL_SEGMENTATIONS=<initial segmentation folder>
 export SIRB_PREPROCESSED=<preprocessed folder>
 export SIRB_RESULTS=<results folder>
 ```
 
-In PowerShell, write `$env:SIRB_RAW = "<raw folder>"` and so on. A variable that is unset or empty takes the
+In PowerShell, write `$env:SIRB_RAW = "<dataset folder>"` and so on. A variable that is unset or empty takes the
 default above. Select GPUs with `CUDA_VISIBLE_DEVICES`.
 
 ## Check the installation

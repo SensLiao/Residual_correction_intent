@@ -167,7 +167,7 @@ class SIRBTrain(nn.Module):
         return image[None], channels[None], valid[None, None]
 
     def whole_volume_grid(self, view) -> tuple[np.ndarray, tuple[int, int, int]]:
-        """(affine, shape) of the whole-volume grid of the view's state; for a flipped state the grid of the original
+        """(affine, shape) of the whole-volume grid of the view's state; for a flipped state the grid of the unflipped
         examination, flipped."""
         state = view.state
         flip = bool(view.augmentation.flip_lr)
