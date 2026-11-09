@@ -1,0 +1,6 @@
+{
+  "_base_": "../sirb.json",
+  "model": {
+    "merged_non_target_roles": true
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "model": {
+    "window_size": 112,
+    "grid_spacing_mm": [3.0, 3.0, 3.0],
+    "whole_volume_shape": [96, 64, 64],
+    "init_seed": 3407,
+    "scribble_conditioning": true,
+    "correct_tissue_role": true,
+    "native_refinement": true,
+    "merged_non_target_roles": false
+  }
+}

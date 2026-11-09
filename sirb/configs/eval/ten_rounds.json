@@ -1,0 +1,7 @@
+{
+  "_base_": "five_rounds.json",
+  "run": "sirb_ten_rounds",
+  "session": {
+    "rounds": 10
+  }
+}

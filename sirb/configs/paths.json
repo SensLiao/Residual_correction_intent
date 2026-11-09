@@ -1,0 +1,7 @@
+{
+  "paths": {
+    "raw": "${env:SIRB_RAW}",
+    "preprocessed": "${env:SIRB_PREPROCESSED}",
+    "results": "${env:SIRB_RESULTS,./sirb_results}"
+  }
+}

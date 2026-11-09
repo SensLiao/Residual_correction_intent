@@ -1,0 +1,30 @@
+{
+  "_base_": ["../model/sirb.json", "../data/psma.json"],
+  "run": "sirb_five_rounds",
+  "session": {
+    "rounds": 5,
+    "simulator_seed": 42,
+    "draw_on_empty_ground_truth": false
+  },
+  "predictor": {
+    "local_update": false,
+    "flip_average": true,
+    "precision": "fp32",
+    "compile": false,
+    "near_margin_mm": 0.0,
+    "window_batch": 4,
+    "voxel_chunk": 262144
+  },
+  "runtime": {
+    "tf32": true,
+    "cudnn_benchmark": true,
+    "cpu_threads": 8
+  },
+  "evaluation": {
+    "bootstrap": {
+      "resamples": 10000,
+      "seed": 3407,
+      "confidence": 0.95
+    }
+  }
+}

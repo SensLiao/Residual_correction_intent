@@ -1,0 +1,96 @@
+{
+  "_base_": "../paths.json",
+  "data": {
+    "raw": {
+      "images": "imagesTr",
+      "labels": "labelsTr",
+      "initial_segmentations": "initial_segmentations",
+      "ct_suffix": "_0000",
+      "pet_suffix": "_0001",
+      "extension": ".nii.gz",
+      "probability_key": "foreground_probability"
+    },
+    "splits": "splits",
+    "cache": {
+      "directory": "examinations",
+      "whole_volume_frame": {
+        "grid_spacing_mm": [3.0, 3.0, 3.0],
+        "shape": [96, 64, 64]
+      }
+    },
+    "normalization": {
+      "ct_clip": [-1000.0, 1000.0],
+      "ct_divisor": 1000.0,
+      "pet_min_iqr": 0.001,
+      "pet_min_valid_voxels": 32
+    },
+    "initial_segmentation": {
+      "rule": "strict_greater_than_0.5",
+      "max_disagreement": 0.001
+    },
+    "pet_reference": {
+      "mu": 0.013611920643597841,
+      "s": 0.28984622239659075
+    },
+    "drawing_styles": ["centerline", "random", "boundary"],
+    "ground_truth_corrected": {
+      "seed": 3407,
+      "trajectories_per_examination": 4,
+      "states_per_examination": 20,
+      "partial_correction_probability": 0.5,
+      "partial_correction_fraction_range": [0.3, 1.0]
+    },
+    "state_pairs": {
+      "type_mix": {
+        "peripheral": 0.6,
+        "other_error": 0.25,
+        "bridge": 0.15
+      },
+      "peripheral_fraction_range": [0.05, 0.3],
+      "other_errors_fraction_range": [0.3, 1.0],
+      "bridge_neck_ratio_max": 0.5,
+      "bridge_min_side_voxels": 8,
+      "synthetic_bridges": false,
+      "synthetic_bridge_probability": 0.5,
+      "synthetic_bridge_max_gap_voxels": 12
+    },
+    "state_sources": {
+      "ground_truth_corrected": {
+        "directory": "states/ground_truth_corrected",
+        "manifest": "pairs.jsonl",
+        "sampling": "uniform"
+      },
+      "earlier_version": {
+        "directory": "states/earlier_version",
+        "manifest": "pairs.jsonl",
+        "sampling": "uniform"
+      },
+      "earlier_version_gap_weighted": {
+        "directory": "states/earlier_version",
+        "manifest": "pairs.jsonl",
+        "sampling": "gap_weighted"
+      }
+    },
+    "self_generated": {
+      "directory": "states/self_generated",
+      "name": "self_generated_half{half}_iteration{iteration}",
+      "rounds": 5,
+      "refresh": [
+        {"iteration": 10000, "patient_half": 0},
+        {"iteration": 25000, "patient_half": 1},
+        {"iteration": 40000, "patient_half": 0}
+      ]
+    },
+    "mixing": {
+      "block_iterations": 8,
+      "ground_truth_corrected_pool": "ground_truth_corrected",
+      "ground_truth_corrected_slots": 4,
+      "earlier_version_pools": ["earlier_version", "earlier_version_gap_weighted"],
+      "self_generated_slots_per_half": 2
+    },
+    "views": {
+      "target_exhausted_block": 8,
+      "target_exhausted_per_block": 1
+    }
+  }
+}

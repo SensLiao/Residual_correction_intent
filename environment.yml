@@ -1,0 +1,17 @@
+# conda env create -f environment.yml && conda activate sirb
+# PyTorch comes from pip; for a GPU, install the wheel that matches your CUDA version (see INSTALL.md).
+name: sirb
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - scipy
+  - nibabel
+  - scikit-image
+  - connected-components-3d
+  - networkx
+  - matplotlib  # imported at module level by the official autoPET V metrics file
+  - pip
+  - pip:
+      - torch>=2.4

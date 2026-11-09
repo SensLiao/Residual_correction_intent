@@ -1,0 +1,4 @@
+# Keep the upstream files byte-for-byte identical (CRLF line endings included).
+simulate_scribbles.py -text
+metrics.py -text
+LICENSE -text

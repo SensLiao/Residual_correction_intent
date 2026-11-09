@@ -1,0 +1,65 @@
+{
+  "_base_": ["../model/sirb.json", "../data/psma.json"],
+  "run": "sirb_psma",
+  "data": {
+    "mixing": {
+      "earlier_version_pools": []
+    },
+    "self_generated": {
+      "refresh": [
+        {"iteration": 10000, "patient_half": 0},
+        {"iteration": 25000, "patient_half": 1},
+        {"iteration": 40000, "patient_half": 0}
+      ]
+    }
+  },
+  "train": {
+    "seed": 3407,
+    "iterations": 50000,
+    "views_per_iteration": 8,
+    "tf32": true,
+    "optimizer": {
+      "lr": 0.0002,
+      "betas": [0.9, 0.999],
+      "eps": 1e-08,
+      "weight_decay": 1e-05
+    },
+    "learning_rate": {
+      "warmup_iterations": 1000,
+      "cosine_segments": [[40000, 5e-05], [50000, 2e-05]]
+    },
+    "gradient_clip_norm": 5.0,
+    "loss": {
+      "native_ce": 1.0,
+      "source_ce": 1.0,
+      "dice": 1.0,
+      "dice_epsilon": 1e-06
+    },
+    "checkpoint_every": 1000,
+    "log_every": 20,
+    "refresh": {
+      "simulator_seed": 42,
+      "draw_on_empty_ground_truth": true,
+      "predictor": {
+        "local_update": false,
+        "flip_average": true,
+        "precision": "fp32",
+        "compile": false,
+        "near_margin_mm": 0.0,
+        "window_batch": 4,
+        "voxel_chunk": 262144
+      }
+    },
+    "runtime": {
+      "workers": 4,
+      "prefetch_depth": 3,
+      "cpu_threads": 2,
+      "cudnn_benchmark": true,
+      "voxel_chunk": 2097152,
+      "recompute_convolutions": false,
+      "recompute_native_voxels": false,
+      "source_chunk": 4,
+      "recompute_role_head": true
+    }
+  }
+}

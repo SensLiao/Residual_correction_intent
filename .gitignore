@@ -1,0 +1,15 @@
+# Kept out of git: model weights, data, results, caches, and the tests (they are local checks only).
+*.pt
+*.pth
+/tests/
+/pytest.ini
+/sirb_results/
+*.nii.gz
+*.npy
+*.npz
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
