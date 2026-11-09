@@ -1,7 +1,7 @@
 {
   "paths": {
-    "raw": "${env:SIRB_RAW}",
-    "preprocessed": "${env:SIRB_PREPROCESSED}",
+    "raw": "${env:SIRB_RAW,./datasets/PSMA-PET-CT-Lesions}",
+    "preprocessed": "${env:SIRB_PREPROCESSED,./datasets/preprocessed}",
     "results": "${env:SIRB_RESULTS,./sirb_results}"
   }
 }

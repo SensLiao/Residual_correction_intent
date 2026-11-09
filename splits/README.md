@@ -13,10 +13,14 @@ test sets.
 | `timing.txt` | 6 | 6 | validation examinations on which the time per scribble is measured |
 | `val_styles.json` | 99 | | examination → scribble drawing style of the simulated user |
 | `test_styles.json` | 91 | | examination → scribble drawing style of the simulated user |
+| `nnunet_folds.json` | 506 | 321 | the five folds of the nnU-Net that makes the initial segmentations (nnU-Net `splits_final.json` format) |
 
 The training and validation sets together hold the 321 patients outside the test set (the training/validation set).
 nnU-Net and the task-specific interactive segmentation methods are trained on this pool with patient-level five-fold
-cross-validation; SIRB divides it by patient into its training set and validation set.
+cross-validation (`nnunet_folds.json`: every examination of the pool is in the `val` list of exactly one fold, no
+patient is in two folds, and no test examination is in any fold); SIRB divides the pool by patient into its training
+set and validation set. How the folds give the initial segmentations is in
+[`datasets/PSMA-PET-CT-Lesions/initial_segmentations/README.md`](../datasets/PSMA-PET-CT-Lesions/initial_segmentations/README.md).
 
 The evaluation tools read the test set only when `--split test` is given explicitly.
 

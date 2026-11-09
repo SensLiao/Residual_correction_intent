@@ -4,7 +4,7 @@
 
 Ruixuan Liao, Jinman Kim
 
-[[`Dataset`](https://doi.org/10.57754/FDAT.g27kx-86t35)] [[`autoPET V`](https://www.autopet.org/autopetv.html)] [[`Simulated user`](https://github.com/lab-midas/autoPETV)] [[`BibTeX`](#citing-sirb)]
+[[`Dataset`](https://doi.org/10.57754/FDAT.g27kx-86t35)] [[`nnU-Net`](https://github.com/MIC-DKFZ/nnUNet)] [[`autoPET V`](https://www.autopet.org/autopetv.html)] [[`Simulated user`](https://github.com/lab-midas/autoPETV)] [[`BibTeX`](#citing-sirb)]
 
 ![Interactive correction with SIRB](assets/workflow.png?raw=true)
 
@@ -47,27 +47,32 @@ for details.
 
 ## Getting Started
 
-### Data folders
+### Download the data
 
-SIRB reads the PSMA-PET-CT-Lesions examinations in the layout of the autoPET V release, together with the initial
-segmentation that is to be corrected. Three environment variables point to the data and the results:
+SIRB uses three things from outside this repository. Each has a folder here whose README says where to get it and
+where to put it:
+
+| | **What** | **Get it from** | **Put it in** |
+| :-: | :-- | :-- | :-- |
+| 1 | PSMA-PET-CT-Lesions, NIfTI release v3: 597 PSMA PET/CT examinations of 378 patients with lesion labels | [FDAT](https://doi.org/10.57754/FDAT.g27kx-86t35) | [`datasets/PSMA-PET-CT-Lesions/`](datasets/PSMA-PET-CT-Lesions/README.md) |
+| 2 | The initial segmentations that SIRB corrects, from a five-fold nnU-Net | [nnU-Net v2](https://github.com/MIC-DKFZ/nnUNet), trained on the folds in [`splits/nnunet_folds.json`](splits/nnunet_folds.json) | [`datasets/PSMA-PET-CT-Lesions/initial_segmentations/`](datasets/PSMA-PET-CT-Lesions/initial_segmentations/README.md) |
+| 3 | The official autoPET V evaluation protocol: simulated user and metrics | [autoPET V](https://github.com/lab-midas/autoPETV), already included | [`sirb/third_party/autopet_v/`](sirb/third_party/autopet_v/README.md) |
+
+With the data in place:
 
 ```
-$SIRB_RAW/
+datasets/PSMA-PET-CT-Lesions/
 ├── imagesTr/<examination>_0000.nii.gz        CT
 ├── imagesTr/<examination>_0001.nii.gz        PET
-├── labelsTr/<examination>.nii.gz             ground truth (training and evaluation only)
+├── labelsTr/<examination>.nii.gz             lesion labels (training and evaluation only)
 └── initial_segmentations/<examination>.nii.gz
-$SIRB_PREPROCESSED/                           examination cache and training states (written by tools/)
-$SIRB_RESULTS/                                one folder per run: configuration, checkpoints, predictions, scores
 ```
 
-The initial segmentation can come from any automatic model. In our experiments it is the prediction of a five-fold
-nnU-Net trained on other patients. Prepare the examinations of a split once:
+These are the default folders. The environment variables `SIRB_RAW`, `SIRB_PREPROCESSED` and `SIRB_RESULTS` move the
+data, the preprocessed examinations and the results elsewhere (see [`INSTALL.md`](INSTALL.md) and
+[`datasets/README.md`](datasets/README.md)). Prepare the examinations of a split once:
 
 ```bash
-export SIRB_RAW=<raw folder> SIRB_PREPROCESSED=<preprocessed folder> SIRB_RESULTS=<results folder>
-
 python tools/prepare_data.py --split val
 ```
 
@@ -198,7 +203,9 @@ patient-level split is in [`splits/`](splits/README.md):
 | test set | 91 | 57 | reporting the scores of the frozen model |
 
 The drawing style of the simulated user (centerline, random or boundary) is fixed per examination, so every method
-sees the same style on the same examination.
+sees the same style on the same examination. [`splits/nnunet_folds.json`](splits/nnunet_folds.json) holds the five
+patient-level folds of the training and validation examinations on which the nnU-Net that makes the initial
+segmentations is trained.
 
 ## Training SIRB
 
@@ -228,7 +235,8 @@ python training/train.py --config sirb/configs/train/sirb_psma.json
 │   └── configs/                model, variants, data, training and evaluation configurations
 ├── training/                   training loop, losses, optimizer, state refresh
 ├── tools/                      prepare_data, generate_states, predict, evaluate, benchmark
-├── splits/                     patient-level splits and drawing styles
+├── splits/                     patient-level splits, drawing styles and the nnU-Net folds
+├── datasets/                   where the downloaded data goes (README files only)
 ├── checkpoints/                model weights (not tracked by git)
 └── assets/                     figures of this page
 ```

@@ -7,6 +7,10 @@
 *.nii.gz
 *.npy
 *.npz
+# datasets/ holds the downloaded data; only its README files are tracked.
+/datasets/**
+!/datasets/**/
+!/datasets/**/README.md
 __pycache__/
 *.pyc
 .pytest_cache/
