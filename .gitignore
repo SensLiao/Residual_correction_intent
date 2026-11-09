@@ -1,6 +1,7 @@
 # Kept out of git: model weights, data, results, caches, and the tests (they are local checks only).
 *.pt
 *.pth
+!/checkpoints/sirb_psma.pt
 /tests/
 /pytest.ini
 /sirb_results/

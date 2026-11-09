@@ -155,7 +155,8 @@ python tools/prepare_data.py --split val
 
 ### Checkpoint
 
-Put the trained checkpoint at `checkpoints/sirb_psma.pt`. Model weights are not stored in this git repository.
+The trained SIRB checkpoint comes with the repository: [`checkpoints/sirb_psma.pt`](checkpoints/sirb_psma.pt)
+(31.7 MB, 50,000 training iterations). Both predictor modes use it.
 
 ### Correct a segmentation
 
@@ -214,7 +215,7 @@ other errors and correct tissue, and native refinement gives every editable voxe
 role probabilities. The update rule adds or removes, by the correction type, only the editable voxels whose target
 probability is at least 0.5.
 
-SIRB has 7.92 M parameters ([config](sirb/configs/model/sirb.json)). The predictor has two modes:
+SIRB has 7.92 M parameters ([config](sirb/configs/model/sirb.json), [checkpoint](checkpoints/sirb_psma.pt)). The predictor has two modes:
 
 | **Mode** | **Computation** | **Time per scribble (s)** |
 | :------- | :-------------- | :-----------------------: |
@@ -270,7 +271,7 @@ python training/train.py --config sirb/configs/train/sirb_psma.json
 ├── tools/                      prepare_data, make_splits, generate_states, predict, evaluate, benchmark
 ├── splits/                     patient-level splits, drawing styles and the nnU-Net folds
 ├── datasets/                   the dataset and the initial segmentations (not tracked by git)
-├── checkpoints/                model weights (not tracked by git)
+├── checkpoints/                the trained checkpoint sirb_psma.pt
 └── assets/                     figures of this page
 ```
 
