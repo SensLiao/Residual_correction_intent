@@ -4,8 +4,8 @@
 python training/train.py --config sirb/configs/train/sirb_psma.json
 ```
 
-trains SIRB for 50,000 training iterations on the training set with the paper's recipe, apart from the
-earlier-version states (see [Data](#data)). The GPU is chosen with `CUDA_VISIBLE_DEVICES`; `--device cpu` runs on the
+trains SIRB for 50,000 training iterations on the training set with the paper's recipe, with
+ground-truth-corrected states in place of the auxiliary-model states (see [Data](#data)). The GPU is chosen with `CUDA_VISIBLE_DEVICES`; `--device cpu` runs on the
 CPU (useful only to check a setup).
 
 | File | Contents |
@@ -50,17 +50,16 @@ Training reads, under `SIRB_PREPROCESSED`:
 2. the ground-truth-corrected states, from `python tools/generate_states.py --split train`;
 3. the self-generated states, which the trainer makes itself (below).
 
-The paper's recipe also drew from **earlier-version states**, the states of five-round interactions of three earlier
-SIRB versions. They can no longer be generated: the earlier networks that produced them were not kept. The shipped
-configuration therefore has `data.mixing.earlier_version_pools: []`, and the slots of the earlier-version states go to
-the ground-truth-corrected states, so a retrained model follows the paper's recipe except for this source of states.
-Pools of earlier-version states written in the same format can be used again with
-`data.mixing.earlier_version_pools='["earlier_version","earlier_version_gap_weighted"]'` (their folders are
+The paper's recipe also drew on **auxiliary-model states** in the first 25,000 iterations: the states of five-round
+interactions of auxiliary SIRB models trained on the training set, which supply model-made errors before the model can
+make useful ones of its own. The released configuration gives their slots to the ground-truth-corrected states
+(`data.mixing.earlier_version_pools: []`). Pools of states in the same format, from any model or error generator, can be
+added with `data.mixing.earlier_version_pools='["earlier_version","earlier_version_gap_weighted"]'` (their folders are
 `data.state_sources.earlier_version*`).
 
 Which pool a unit draws from: in each block of eight iterations, every unit kind gets eight slots in a random order,
 four for the ground-truth-corrected states, two for each patient half's newest self-generated states once they exist,
-and the rest for the ground-truth-corrected states (or the earlier-version states, when given) (`data.mixing`).
+and the rest for the ground-truth-corrected states (or the auxiliary-model states, when given) (`data.mixing`).
 
 ### Self-generated states
 
@@ -175,5 +174,5 @@ The variant's self-generated states come from the variant itself.
 With the same configuration and data a run trains on the same units, windows and samples, whatever the number of
 workers and the prefetch depth: units are reserved in iteration order in the training process. On a GPU the
 arithmetic itself is not bit-for-bit deterministic (`cudnn_benchmark`, atomic additions), so two runs agree to float
-rounding at first and then drift apart. The released model was trained with the earlier-version states described
-above, which a retrained model cannot use.
+rounding at first and then drift apart. The released model was trained with the auxiliary-model states described
+above; the released configuration uses ground-truth-corrected states in their place.
