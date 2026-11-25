@@ -1,0 +1,2 @@
+splits/*.txt text eol=lf
+splits/*.json text eol=lf

@@ -1,0 +1,22 @@
+{
+  "_base_": "five_rounds.json",
+  "run": "sirb_speed",
+  "predictor": {
+    "local_update": true
+  },
+  "session": {
+    "draw_on_empty_ground_truth": true
+  },
+  "speed": {
+    "split": "val",
+    "warmup_examination": "psma_3959d1c381a5bcd6_2015-11-12",
+    "examinations": [
+      "psma_fad59ccacf4b88f2_2022-03-26",
+      "psma_90092e3de48644f1_2018-09-10",
+      "psma_0934d8468a1c7624_2021-01-11",
+      "psma_69ea0c011af2e2d4_2016-07-29",
+      "psma_faa4c90c3d2d53a3_2019-08-10",
+      "psma_a1e1b43ebcf4e89c_2014-08-14"
+    ]
+  }
+}

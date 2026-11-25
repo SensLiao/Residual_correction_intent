@@ -1,0 +1,34 @@
+# Kept out of git: model weights, data, results, caches, and the tests (they are local checks only).
+*.pt
+*.pth
+!/checkpoints/sirb_psma.pt
+/tests/
+/pytest.ini
+/sirb_results/
+*.nii.gz
+*.npy
+*.npz
+# datasets/ holds the downloaded dataset, the initial segmentations and the preprocessed data; only the two README
+# files are tracked.
+/datasets/*
+!/datasets/PSMA-PET-CT-Lesions/
+!/datasets/initial_segmentations/
+/datasets/PSMA-PET-CT-Lesions/*
+!/datasets/PSMA-PET-CT-Lesions/README.md
+/datasets/initial_segmentations/*
+!/datasets/initial_segmentations/README.md
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Local credentials.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+.ruff_cache/

@@ -1,0 +1,6 @@
+{
+  "_base_": "../sirb.json",
+  "model": {
+    "native_refinement": false
+  }
+}

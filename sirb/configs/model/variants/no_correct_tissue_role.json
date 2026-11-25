@@ -1,0 +1,6 @@
+{
+  "_base_": "../sirb.json",
+  "model": {
+    "correct_tissue_role": false
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "_base_": "../sirb.json",
+  "model": {
+    "scribble_conditioning": false
+  }
+}

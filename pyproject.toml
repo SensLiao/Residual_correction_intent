@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sirb"
+version = "0.1.0"
+description = "SIRB: intent-aware interactive correction of whole-body PSMA PET/CT segmentations from scribbles"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.4",
+    "numpy",
+    "scipy",
+    "nibabel",
+    "scikit-image",
+    "connected-components-3d",
+    "networkx",
+    "matplotlib",
+]
+
+[tool.setuptools.packages.find]
+include = ["sirb*", "training*"]
+
+[tool.setuptools.package-data]
+sirb = ["configs/*.json", "configs/**/*.json", "third_party/autopet_v/LICENSE", "third_party/autopet_v/README.md"]
